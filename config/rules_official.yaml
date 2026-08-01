@@ -1,0 +1,145 @@
+# ============================================================
+# 党政机关公文格式规则文件（GB/T 9704-2012）
+# 由同目录 schema.md 定义的 contract-v1 格式
+# 字体字号预设参考 format/config.py DEFAULT_OFFICIAL_CONFIG
+# ============================================================
+schema: contract-v1
+domain: "党政机关公文"
+version: "1.0"
+
+# 段落分类规则：按声明顺序匹配，第一个匹配成功的生效
+segments:
+  # 标题：首段或大字号居中文本（方正小标宋简体 22pt 二号）
+  - id: title
+    match: "index == 0 or size >= 20"
+    desc: "公文标题"
+
+  # 附件标识：以"附件"开头的段落（如"附件1：XXX"）
+  - id: attachment
+    match: "regex('^附件\\d*')"
+    desc: "附件标识"
+
+  # 一级标题：汉字数字+顿号（如"一、""二、"），或 Heading 1 样式
+  - id: h1
+    match: "regex('^[一二三四五六七八九十]+、') or style =~ 'Heading 1'"
+    desc: "一级标题"
+
+  # 二级标题：（一）（二）形式，或 Heading 2 样式
+  - id: h2
+    match: "regex('^（[一二三四五六七八九十]+）') or style =~ 'Heading 2'"
+    desc: "二级标题"
+
+  # 三级标题：1. 2. 3. 形式，或 Heading 3 样式
+  - id: h3
+    match: "regex('^\\d+[\\.、]') or style =~ 'Heading 3'"
+    desc: "三级标题"
+
+  # 正文：其他
+  - id: body
+    match: "else"
+    desc: "正文"
+
+# 格式检查规则
+# 字体字号预设来自 DEFAULT_OFFICIAL_CONFIG
+# file_types: PDF 字体识别不可靠，样式检查只对 docx/doc 生效
+rules:
+  # ===== 标题：方正小标宋简体 22pt(二号) =====
+  - segment: title
+    field: font
+    op: in
+    value: ["方正小标宋简体", "Times New Roman"]
+    msg: "公文标题字体应为方正小标宋简体"
+    file_types: [docx, doc]
+  - segment: title
+    field: size
+    op: eq
+    value: 22
+    tol: 1.0
+    msg: "公文标题字号应为22pt(二号)"
+    file_types: [docx, doc]
+
+  # ===== 一级标题：黑体 16pt(三号) =====
+  - segment: h1
+    field: font
+    op: in
+    value: ["黑体", "Times New Roman"]
+    msg: "一级标题字体应为黑体"
+    file_types: [docx, doc]
+  - segment: h1
+    field: size
+    op: eq
+    value: 16
+    tol: 1.0
+    msg: "一级标题字号应为16pt(三号)"
+    file_types: [docx, doc]
+
+  # ===== 二级标题：楷体_GB2312 16pt(三号) =====
+  - segment: h2
+    field: font
+    op: in
+    value: ["楷体_GB2312", "楷体", "Times New Roman"]
+    msg: "二级标题字体应为楷体_GB2312"
+    file_types: [docx, doc]
+  - segment: h2
+    field: size
+    op: eq
+    value: 16
+    tol: 1.0
+    msg: "二级标题字号应为16pt(三号)"
+    file_types: [docx, doc]
+
+  # ===== 三级标题：仿宋_GB2312 16pt(三号) 加粗 =====
+  - segment: h3
+    field: font
+    op: in
+    value: ["仿宋_GB2312", "仿宋", "Times New Roman"]
+    msg: "三级标题字体应为仿宋_GB2312"
+    file_types: [docx, doc]
+  - segment: h3
+    field: size
+    op: eq
+    value: 16
+    tol: 1.0
+    msg: "三级标题字号应为16pt(三号)"
+    file_types: [docx, doc]
+
+  # ===== 正文：仿宋_GB2312 16pt(三号) 两端对齐 =====
+  - segment: body
+    field: font
+    op: in
+    value: ["仿宋_GB2312", "仿宋", "Times New Roman"]
+    msg: "正文字体应为仿宋_GB2312"
+    file_types: [docx, doc]
+  - segment: body
+    field: size
+    op: eq
+    value: 16
+    tol: 1.0
+    msg: "正文字号应为16pt(三号)"
+    file_types: [docx, doc]
+  - segment: body
+    field: align
+    op: in
+    value: [justify, left]
+    msg: "正文对齐应为两端对齐"
+    file_types: [docx, doc]
+
+  # ===== 附件标识：仿宋_GB2312 16pt(三号) =====
+  - segment: attachment
+    field: font
+    op: in
+    value: ["仿宋_GB2312", "仿宋", "Times New Roman"]
+    msg: "附件标识字体应为仿宋_GB2312"
+    file_types: [docx, doc]
+  - segment: attachment
+    field: size
+    op: eq
+    value: 16
+    tol: 1.0
+    msg: "附件标识字号应为16pt(三号)"
+    file_types: [docx, doc]
+
+# 跳过的文件关键字
+skip_files:
+  - "查重报告"
+  - "成绩评定表"

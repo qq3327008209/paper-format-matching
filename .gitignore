@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Trae IDE 规划文件
+.trae/
+
+# pytest 缓存
+.pytest_cache/
+
+# 校验报告与批注（运行时生成）
+reports/
+annotated/
+
+# 格式化输出（运行时生成）
+*_formatted.docx
+*_fixed.docx
+
+# 临时文件
+*.tmp
+*.bak
+*.log
+
+# API 配置（含密钥，勿提交）
+config/api_config.yaml

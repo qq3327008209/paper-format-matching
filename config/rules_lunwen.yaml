@@ -1,0 +1,246 @@
+# ============================================================
+# 毕业设计论文格式规则文件（基于附件10模板提取）
+# 由同目录 schema.md 定义的 contract-v1 格式
+# ============================================================
+schema: contract-v1
+domain: "毕业论文"
+version: "1.0"
+
+# 段落分类规则：按声明顺序匹配，第一个匹配成功的生效
+# 注意：abstract_cn/abstract_en/reference/acknowledgment 必须放在 cover 之前，
+# 否则 cover 的 "index < 40" 会把摘要标题段落（通常在段落 15-50）抢走，
+# 导致 abstract_cn 的 indices 为空，误报"缺少中文摘要章节"。
+segments:
+  # 页眉：每页顶部的"届湖北汽车工业学院毕业设计（论文）"
+  - id: header
+    match: "regex('届湖北汽车工业学院毕业设计')"
+    desc: "页眉"
+
+  # 页脚页码：纯数字或"-数字-"形式
+  - id: footer
+    match: "regex('^-?\\s*\\d+\\s*-?$') and size <= 14"
+    desc: "页脚页码"
+
+  # 目录：样式含 toc
+  - id: toc
+    match: "style =~ 'toc'"
+    desc: "目录条目"
+
+  # 中文摘要章节（必须放在 cover 之前，避免被 cover 的 index<40 抢走）
+  # after_h1 包括标题段落本身
+  - id: abstract_cn
+    match: "after_h1('摘要') until next h1"
+    desc: "中文摘要"
+
+  # 英文摘要章节（必须放在 cover 之前）
+  - id: abstract_en
+    match: "after_h1('Abstract') until next h1"
+    desc: "英文摘要"
+
+  # 参考文献章节（必须放在 cover 之前）
+  - id: reference
+    match: "after_h1('参考文献') until next h1"
+    desc: "参考文献"
+
+  # 致谢章节（必须放在 cover 之前）
+  - id: acknowledgment
+    match: "after_h1('致谢') until next h1"
+    desc: "致谢"
+
+  # 封面：剩余的前 40 段（含标题、题目、学院等填写项），或包含封面字段关键字
+  # 放在 abstract_cn 等之后，让章节范围优先匹配
+  - id: cover
+    match: "index < 40 or regex('^(题\\s*目|学\\s*院|专\\s*业|班\\s*级|学生姓名|学\\s*号|指导教师|届湖北汽车|毕\\s*业\\s*设\\s*计)')"
+    desc: "封面"
+
+  # 一级标题：第X章+空白+标题文字，或 Title 样式，或独立大字号章节标题
+  # 注意：要求"第X章"后必须跟空白，避免误匹配正文"第一章是绪论..."这种句子
+  - id: h1
+    match: "regex('^第[一二三四五六七八九十\\d]+章\\s+\\S') or style =~ 'Title' or (size >= 14 and regex('^(摘\\s*要|Abstract|目录|参考文献|致谢|附录)\\s*$'))"
+    desc: "一级标题"
+
+  # 二级标题：X.X 格式，且（Heading 样式 或 字号>=13）
+  # 放宽 style 要求：有些学生用 Body Text Indent 样式做二级标题
+  - id: h2
+    match: "regex('^\\d+\\.\\d+') and (style =~ 'Heading' or size >= 13)"
+    desc: "二级标题"
+
+  # 三级标题：X.X.X 格式 + Heading 样式
+  - id: h3
+    match: "regex('^\\d+\\.\\d+\\.\\d+') and style =~ 'Heading'"
+    desc: "三级标题"
+
+  # 无编号小标题：字号>=13 且不含句号/逗号的短文本（如"选座购票功能需求"）
+  # 这类段落是二级标题但没有编号，用黑体加粗显示
+  # regex 用 * 而非 +，允许空文本（避免空段落被分类为 body）
+  - id: subtitle
+    match: "size >= 13 and regex('^[^。，；！？、:：]*\\s*$')"
+    desc: "无编号小标题"
+
+  # 图标题/表标题：图X-X 或 表X-X 开头（五号字黑体居中）
+  - id: caption
+    match: "regex('^(图|表)\\s*\\d+')"
+    desc: "图表标题"
+
+  # 图表内嵌小字号文字（ER图、流程图等内的属性标签）
+  # PDF 提取会把图内文字作为段落提取，字号通常 <= 10.5pt
+  - id: figure_text
+    match: "size <= 10.5 and size > 0"
+    desc: "图表内嵌文字"
+
+  # 正文：其他
+  - id: body
+    match: "else"
+    desc: "正文"
+
+# 格式检查规则
+rules:
+  # ===== 封面、目录、图表标题、图内文字、页眉页脚、无编号小标题：跳过 =====
+  - segment: cover
+    op: skip
+  - segment: header
+    op: skip
+  - segment: footer
+    op: skip
+  - segment: toc
+    op: skip
+  - segment: caption
+    op: skip
+  - segment: figure_text
+    op: skip
+  - segment: subtitle
+    op: skip
+
+  # ===== 一级标题：黑体三号(16pt) =====
+  # PDF 中标题以"第X章"开头，spans[0] 是数字字符，字体可能是 Times New Roman 粗体
+  # 实际中文字符是黑体，所以允许黑体和 Times New Roman
+  # file_types: PDF 字体识别不可靠，样式检查只对 docx/doc 生效
+  - segment: h1
+    field: font
+    op: in
+    value: ["黑体", "Times New Roman"]
+    msg: "一级标题字体应为黑体"
+    file_types: [docx, doc]
+  - segment: h1
+    field: size
+    op: eq
+    value: 16
+    tol: 1.0
+    msg: "一级标题字号应为16pt(三号)"
+    file_types: [docx, doc]
+
+  # ===== 二级标题：黑体四号(14pt) =====
+  - segment: h2
+    field: font
+    op: in
+    value: ["黑体", "Times New Roman"]
+    msg: "二级标题字体应为黑体"
+    file_types: [docx, doc]
+  - segment: h2
+    field: size
+    op: eq
+    value: 14
+    tol: 1.5
+    msg: "二级标题字号应为14pt(四号)"
+    file_types: [docx, doc]
+
+  # ===== 三级标题：黑体小四(12pt) =====
+  - segment: h3
+    field: font
+    op: in
+    value: ["黑体", "Times New Roman"]
+    msg: "三级标题字体应为黑体"
+    file_types: [docx, doc]
+  - segment: h3
+    field: size
+    op: eq
+    value: 12
+    tol: 1.0
+    msg: "三级标题字号应为12pt(小四)"
+    file_types: [docx, doc]
+
+  # ===== 正文：宋体小四(12pt)、两端对齐、1.5倍行距 =====
+  # 模板要求"中文字体宋体 + 英文字体 Times New Roman"，
+  # 提取器读到 ascii 字体（如 Times New Roman）也算合格
+  # 字号容差 2.0 容忍 PDF 渲染缩放和表格内文字（10.0pt-14.0pt 都算合格）
+  # file_types: PDF 字体/字号/行距识别不可靠，样式检查只对 docx/doc 生效
+  - segment: body
+    field: font
+    op: in
+    value: ["宋体", "Times New Roman"]
+    msg: "正文字体应为宋体或Times New Roman"
+    file_types: [docx, doc]
+  - segment: body
+    field: size
+    op: eq
+    value: 12
+    tol: 2.0
+    msg: "正文字号应为12pt(小四)"
+    file_types: [docx, doc]
+  - segment: body
+    field: align
+    op: in
+    value: [justify, left]
+    msg: "正文对齐应为两端对齐"
+    file_types: [docx, doc]
+  - segment: body
+    field: line_spacing
+    op: eq
+    value: 1.5
+    tol: 0.5
+    msg: "正文行距应为1.5倍"
+    file_types: [docx, doc]
+
+  # ===== 参考文献：宋体五号(10.5pt) =====
+  # 允许黑体：参考文献标题用黑体（after_h1 包括标题段落本身）
+  - segment: reference
+    field: font
+    op: in
+    value: ["宋体", "Times New Roman", "黑体"]
+    msg: "参考文献字体应为宋体或Times New Roman"
+    file_types: [docx, doc]
+  - segment: reference
+    field: line_spacing
+    op: in
+    value: [1.25, 1.5]
+    msg: "参考文献行距应为1.25倍或1.5倍"
+    file_types: [docx, doc]
+
+  # ===== 英文摘要：楷体_GB2312 小四(12pt) =====
+  # 模板要求 Abstract 内容用楷体_GB2312
+  # 允许黑体：Abstract 标题段落本身用黑体（after_h1 包括标题段落本身）
+  - segment: abstract_en
+    field: font
+    op: in
+    value: ["楷体", "Times New Roman", "黑体"]
+    msg: "英文摘要字体应为楷体"
+    file_types: [docx, doc]
+
+  # ===== 结构检查 =====
+  - segment: abstract_cn
+    op: exists
+    msg: "缺少中文摘要章节"
+  - segment: reference
+    op: exists
+    msg: "缺少参考文献章节"
+  - segment: reference
+    op: count_min
+    value: 10
+    msg: "参考文献不足10条"
+  - segment: abstract_cn
+    op: before
+    target: body
+    msg: "摘要应在正文之前"
+  - segment: reference
+    op: after
+    target: body
+    msg: "参考文献应在正文之后"
+
+# 跳过的学生文件关键字
+skip_files:
+  - "查重报告"
+  - "成绩评定表"
+  - "答辩PPT"
+  - "答辩课件"
+  - "答辩报告"
+  - "英文原文"

@@ -1,0 +1,28 @@
+# LLM API 配置示例（复制为 api_config.yaml 并填入你的密钥）
+# 支持任何 OpenAI 兼容接口
+#
+# 常见提供商配置：
+#
+# DeepSeek:
+#   api_key: "sk-xxxxxxxx"
+#   base_url: "https://api.deepseek.com/v1"
+#   model: "deepseek-chat"
+#
+# OpenAI:
+#   api_key: "sk-xxxxxxxx"
+#   base_url: "https://api.openai.com/v1"
+#   model: "gpt-4o-mini"
+#
+# Kimi (月之暗面):
+#   api_key: "sk-xxxxxxxx"
+#   base_url: "https://api.moonshot.cn/v1"
+#   model: "moonshot-v1-8k"
+#
+# GLM (智谱):
+#   api_key: "xxxxxxxx"
+#   base_url: "https://open.bigmodel.cn/api/paas/v4"
+#   model: "glm-4-flash"
+
+api_key: "your-api-key-here"
+base_url: "https://api.deepseek.com/v1"
+model: "deepseek-chat"

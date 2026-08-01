@@ -1,0 +1,142 @@
+# ============================================================
+# 学术论文格式规则文件
+# 由同目录 schema.md 定义的 contract-v1 格式
+# 字体字号预设参考 format/config.py ACADEMIC_CONFIG
+# ============================================================
+schema: contract-v1
+domain: "学术论文"
+version: "1.0"
+
+# 段落分类规则：按声明顺序匹配，第一个匹配成功的生效
+# 注意：编号层级多的（h3/h2）必须放在 h1 之前，避免被 h1 的"数字+点"正则抢走
+segments:
+  # 标题：首段或大字号文本（黑体 18pt 小二）
+  - id: title
+    match: "index == 0 or size >= 16"
+    desc: "论文标题"
+
+  # 附件/附录：以"附件"或"附录"开头的段落
+  - id: attachment
+    match: "regex('^(附件|附录)')"
+    desc: "附件/附录"
+
+  # 三级标题：1.1.1 形式（须在 h2/h1 之前匹配）
+  - id: h3
+    match: "regex('^\\d+\\.\\d+\\.\\d+(\\s|$)') or style =~ 'Heading 3'"
+    desc: "三级标题"
+
+  # 二级标题：1.1 形式（须在 h1 之前匹配）
+  - id: h2
+    match: "regex('^\\d+\\.\\d+(\\s|$)') or style =~ 'Heading 2'"
+    desc: "二级标题"
+
+  # 一级标题：1 或 1. 形式后接空格/行尾，或 Heading 1 样式
+  - id: h1
+    match: "regex('^\\d+\\.?(\\s|$)') or style =~ 'Heading 1'"
+    desc: "一级标题"
+
+  # 正文：其他
+  - id: body
+    match: "else"
+    desc: "正文"
+
+# 格式检查规则
+# 字体字号预设来自 ACADEMIC_CONFIG
+# file_types: PDF 字体识别不可靠，样式检查只对 docx/doc 生效
+rules:
+  # ===== 标题：黑体 18pt(小二) =====
+  - segment: title
+    field: font
+    op: in
+    value: ["黑体", "Times New Roman"]
+    msg: "论文标题字体应为黑体"
+    file_types: [docx, doc]
+  - segment: title
+    field: size
+    op: eq
+    value: 18
+    tol: 1.0
+    msg: "论文标题字号应为18pt(小二)"
+    file_types: [docx, doc]
+
+  # ===== 一级标题：黑体 15pt =====
+  - segment: h1
+    field: font
+    op: in
+    value: ["黑体", "Times New Roman"]
+    msg: "一级标题字体应为黑体"
+    file_types: [docx, doc]
+  - segment: h1
+    field: size
+    op: eq
+    value: 15
+    tol: 1.0
+    msg: "一级标题字号应为15pt"
+    file_types: [docx, doc]
+
+  # ===== 二级标题：黑体 14pt(四号) =====
+  - segment: h2
+    field: font
+    op: in
+    value: ["黑体", "Times New Roman"]
+    msg: "二级标题字体应为黑体"
+    file_types: [docx, doc]
+  - segment: h2
+    field: size
+    op: eq
+    value: 14
+    tol: 1.0
+    msg: "二级标题字号应为14pt(四号)"
+    file_types: [docx, doc]
+
+  # ===== 三级标题：仿宋_GB2312 16pt(三号) 加粗 =====
+  # ACADEMIC_CONFIG 未显式覆盖 h3，继承自 DEFAULT_OFFICIAL_CONFIG
+  - segment: h3
+    field: font
+    op: in
+    value: ["仿宋_GB2312", "仿宋", "Times New Roman"]
+    msg: "三级标题字体应为仿宋_GB2312"
+    file_types: [docx, doc]
+  - segment: h3
+    field: size
+    op: eq
+    value: 16
+    tol: 1.0
+    msg: "三级标题字号应为16pt(三号)"
+    file_types: [docx, doc]
+
+  # ===== 正文：宋体 12pt(小四) =====
+  - segment: body
+    field: font
+    op: in
+    value: ["宋体", "Times New Roman"]
+    msg: "正文字体应为宋体"
+    file_types: [docx, doc]
+  - segment: body
+    field: size
+    op: eq
+    value: 12
+    tol: 0.5
+    msg: "正文字号应为12pt(小四)"
+    file_types: [docx, doc]
+
+  # ===== 附件/附录：宋体 12pt(小四) =====
+  # ACADEMIC_CONFIG 中 attachment_font=宋体, attachment_size=12
+  - segment: attachment
+    field: font
+    op: in
+    value: ["宋体", "Times New Roman"]
+    msg: "附件/附录字体应为宋体"
+    file_types: [docx, doc]
+  - segment: attachment
+    field: size
+    op: eq
+    value: 12
+    tol: 0.5
+    msg: "附件/附录字号应为12pt(小四)"
+    file_types: [docx, doc]
+
+# 跳过的文件关键字
+skip_files:
+  - "查重报告"
+  - "成绩评定表"
