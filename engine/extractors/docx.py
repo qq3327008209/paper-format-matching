@@ -150,11 +150,18 @@ class DocxExtractor:
 
     @staticmethod
     def _extract_paragraph_format(paragraph) -> dict:
-        """Extract paragraph formatting: alignment, indent, spacing."""
+        """Extract paragraph formatting: alignment, indent, spacing.
+
+        The canonical field name exposed to the rule engine is ``align``
+        (matching the schema documented in ``config/schema.md``); ``alignment``
+        is retained as a backwards-compatible alias.
+        """
         fmt = paragraph.paragraph_format
         alignment = paragraph.alignment or fmt.alignment
+        align = DocxExtractor.ALIGNMENT_MAP.get(alignment)
         return {
-            "alignment": DocxExtractor.ALIGNMENT_MAP.get(alignment),
+            "alignment": align,
+            "align": align,
             "first_line_indent": DocxExtractor._length_to_cm(fmt.first_line_indent),
             "left_indent": DocxExtractor._length_to_cm(fmt.left_indent),
             "right_indent": DocxExtractor._length_to_cm(fmt.right_indent),

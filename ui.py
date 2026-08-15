@@ -51,13 +51,15 @@ console = Console()
 
 def print_banner():
     """打印启动 banner。"""
+    from engine import __version__
+
     content = Text("文档格式校验与排版系统", style="bold cyan", justify="center")
     sub = Text("输入 /help 查看命令，/quit 退出", style="dim", justify="center")
     console.print(Panel.fit(
         f"{content}\n{sub}",
         border_style="cyan",
         title="[bold]paper-format-matching[/bold]",
-        subtitle="[dim]v4.0[/dim]",
+        subtitle=f"[dim]v{__version__}[/dim]",
     ))
 
 
@@ -104,19 +106,32 @@ def print_check_result(errors, file_path, domain):
             border_style="green",
         ))
         return
+
+    # Separate warnings (e.g. missing fields) from genuine format failures.
+    warnings = [e for e in errors if e.get("type") == "missing"]
+    failures = [e for e in errors if e.get("type") != "missing"]
+
     table = Table(
-        title=f"校验结果: {os.path.basename(file_path)}  ({len(errors)} 处问题)",
+        title=(
+            f"校验结果: {os.path.basename(file_path)}  "
+            f"({len(failures)} 处问题"
+            f"{f', {len(warnings)} 处警告' if warnings else ''})"
+        ),
         show_header=True,
         header_style="bold red",
         border_style="red",
     )
     table.add_column("#", style="dim", width=4)
+    table.add_column("严重度", width=8)
     table.add_column("段落", width=10)
     table.add_column("类型", width=12)
     table.add_column("说明")
     for i, err in enumerate(errors, 1):
+        is_warn = err.get("type") == "missing"
+        sev = "[yellow]警告[/yellow]" if is_warn else "[red]错误[/red]"
         table.add_row(
             str(i),
+            sev,
             str(err.get("segment", "")),
             str(err.get("type", "")),
             str(err.get("description", "")),

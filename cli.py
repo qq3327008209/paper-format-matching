@@ -9,7 +9,6 @@ Only imports from the new project modules ``engine`` and ``format`` (plus the
 standard library and ``python-docx``) are used.
 """
 
-import csv
 import json
 import logging
 import os
@@ -25,16 +24,6 @@ logger = logging.getLogger(__name__)
 
 # Supported document extensions for batch operations.
 SUPPORTED_EXTS = (".docx", ".doc", ".wps", ".pdf")
-
-# segment -> (font config key, size config key, default font, default size)
-_SEG_FONT_MAP = {
-    "title": ("title_font", "title_size", "方正小标宋简体", 22),
-    "h1": ("h1_font", "h1_size", "黑体", 16),
-    "h2": ("h2_font", "h2_size", "楷体_GB2312", 16),
-    "h3": ("h3_font", "h3_size", "仿宋_GB2312", 16),
-    "h4": ("h4_font", "h4_size", "仿宋_GB2312", 16),
-    "body": ("body_font", "body_size", "仿宋_GB2312", 16),
-}
 
 
 class CLI:
@@ -202,10 +191,18 @@ class CLI:
     @staticmethod
     def _segment_font_size(segment, config):
         """Return (font_cn, size) appropriate for a segment from config."""
-        if segment in _SEG_FONT_MAP:
-            font_key, size_key, default_font, default_size = _SEG_FONT_MAP[segment]
-            return config.get(font_key, default_font), config.get(size_key, default_size)
-        return config.get("body_font", "仿宋_GB2312"), config.get("body_size", 16)
+        font_key = f"{segment}_font"
+        size_key = f"{segment}_size"
+        defaults = {
+            "title": ("方正小标宋简体", 22),
+            "h1": ("黑体", 16),
+            "h2": ("楷体_GB2312", 16),
+            "h3": ("仿宋_GB2312", 16),
+            "h4": ("仿宋_GB2312", 16),
+            "body": ("仿宋_GB2312", 16),
+        }
+        default_font, default_size = defaults.get(segment, ("仿宋_GB2312", 16))
+        return config.get(font_key, default_font), config.get(size_key, default_size)
 
     def _apply_format_action(self, para, action, value, segment, config):
         """Apply a single repair action to a paragraph."""
@@ -248,14 +245,6 @@ class CLI:
         self.last_errors = errors
         self.last_file = file_path
 
-        # Map segment -> list of (format_action, value) from rules.
-        seg_actions = {}
-        for rule in rules_data.get("rules", []):
-            fa = rule.get("format_action")
-            if fa:
-                seg = rule.get("segment")
-                seg_actions.setdefault(seg, []).append((fa, rule.get("value")))
-
         if not file_path.lower().endswith(".docx"):
             return errors, domain, 0, None
 
@@ -264,23 +253,28 @@ class CLI:
         doc = Document(file_path)
         paragraphs = doc.paragraphs
 
+        # 修复决策直接来自 validate() 返回的 error dict（action / action_value
+        # 字段由规则引擎在 _execute_rule 中写入）。不再重新遍历 rules 聚合
+        # seg_actions——那会让修复路径与校验路径脱节，且对 in/range 等 op 的
+        # value 语义不匹配。
         repaired = 0
-        seen = set()
+        seen: set[tuple] = set()
         for err in errors:
             idx = err.get("paragraph_index")
-            seg = err.get("segment")
-            if idx is None or seg is None:
+            action = err.get("action")
+            if idx is None or action is None:
                 continue
-            for fa, value in seg_actions.get(seg, []):
-                key = (idx, fa)
-                if key in seen:
-                    continue
-                seen.add(key)
-                if 0 <= idx < len(paragraphs):
-                    self._apply_format_action(
-                        paragraphs[idx], fa, value, seg, config
-                    )
-                    repaired += 1
+            value = err.get("action_value")
+            seg = err.get("segment")
+            key = (idx, action)
+            if key in seen:
+                continue
+            seen.add(key)
+            if 0 <= idx < len(paragraphs):
+                self._apply_format_action(
+                    paragraphs[idx], action, value, seg, config
+                )
+                repaired += 1
 
         stem = os.path.splitext(file_path)[0]
         out_path = f"{stem}_fixed.docx"
@@ -377,24 +371,7 @@ class CLI:
             resolve("reports", "batch.csv"), "_check"
         )
         ensure_parent(combined_path)
-        with open(combined_path, "w", encoding="utf-8-sig", newline="") as fh:
-            writer = csv.writer(fh)
-            writer.writerow(
-                ["File", "#", "Type", "Description", "Location", "Paragraph", "Segment"]
-            )
-            for f, errors in all_results:
-                for j, err in enumerate(errors, 1):
-                    writer.writerow(
-                        [
-                            f,
-                            j,
-                            err.get("type", ""),
-                            err.get("description", ""),
-                            err.get("location", ""),
-                            err.get("paragraph_index", ""),
-                            err.get("segment", ""),
-                        ]
-                    )
+        reporter.save_batch_csv(all_results, combined_path)
         ui.print_batch_summary(len(files), total_errors, combined_path)
 
     def cmd_format(self, args):

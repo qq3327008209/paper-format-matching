@@ -11,7 +11,10 @@ from engine.paths import resolve
 
 logger = logging.getLogger(__name__)
 
-PROMPT_TEMPLATE_PATH = resolve("config", "prompt_template.md")
+
+def _prompt_template_path() -> str:
+    """返回 prompt_template.md 的绝对路径（惰性求值）。"""
+    return resolve("config", "prompt_template.md")
 
 
 class RuleGenerator:
@@ -164,7 +167,7 @@ class RuleGenerator:
         (after the "---" separator) is the system prompt.
         Returns the system prompt text.
         """
-        with open(PROMPT_TEMPLATE_PATH, "r", encoding="utf-8") as fh:
+        with open(_prompt_template_path(), "r", encoding="utf-8") as fh:
             content = fh.read()
         placeholder = "{{模板文本}}"
         # The placeholder may appear in the usage header too; find it after the

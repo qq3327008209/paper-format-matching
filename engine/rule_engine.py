@@ -7,7 +7,9 @@ the YAML rule file -- engine code stays unchanged.
 Rule file structure is documented in schema.md.
 """
 
+import ast
 import logging
+import operator
 import os
 import re
 from typing import Any, Optional
@@ -58,6 +60,33 @@ def normalize_font(font_name: Optional[str]) -> Optional[str]:
 
 
 # ---- Match-expression parser ----
+
+
+class _FieldSubstitutor(ast.NodeTransformer):
+    """Replace every ``ast.Name`` in a match-expression AST with an
+    ``ast.Constant`` carrying the actual value from a paragraph dict.
+
+    Python keywords (``and``/``or``/``not``/``in``/``is``/``True``/``False``/
+    ``None``) parse as operator / constant nodes, never as ``Name`` nodes,
+    so they are never mistaken for field references.  List literals such as
+    ``["left", "justify"]`` therefore work correctly without any string-level
+    masking.  Unknown field names resolve to ``None``.
+    """
+
+    def __init__(self, para: dict) -> None:
+        self.para = para
+
+    def visit_Name(self, node: ast.Name) -> ast.Constant:
+        value = self.para.get(node.id)
+        if isinstance(value, str):
+            return ast.Constant(value=value)
+        if isinstance(value, (int, float, bool)):
+            return ast.Constant(value=value)
+        if value is None:
+            return ast.Constant(value=None)
+        # For non-primitive values (lists etc.), fall back to repr as a
+        # string so the expression remains valid Python.
+        return ast.Constant(value=str(value))
 
 
 class MatchParser:
@@ -154,7 +183,26 @@ class MatchParser:
             return False
 
     def _eval_expression(self, para: dict, para_index: int) -> bool:
-        """Evaluate a plain match expression against paragraph data."""
+        """Evaluate a plain match expression against paragraph data.
+
+        The expression is pre-processed in two ways that are custom to the
+        match language (not valid Python on their own):
+
+        * ``regex('pattern')``  → ``True``/``False`` (checks ``para['text']``)
+        * ``field =~ 'pattern'`` → ``True``/``False`` (checks ``para[field]``)
+
+        After that, the expression is valid Python and is parsed into an AST.
+        Field references (``index``, ``size``, ``font``, ...) appear as
+        ``ast.Name`` nodes and are replaced with ``ast.Constant`` nodes
+        carrying the actual value from ``para``.  Python keywords such as
+        ``and``/``or``/``not``/``in``/``is`` parse as operator nodes, never as
+        ``Name`` nodes, so they are never mistaken for field references --
+        list literals like ``["left", "justify"]`` are therefore handled
+        correctly without any string-level masking.
+
+        The substituted AST is evaluated by :meth:`_eval_ast` using a strict
+        node-type whitelist.
+        """
         expr = self.expression
 
         # regex('pattern') shorthand -> checks para['text']
@@ -175,32 +223,135 @@ class MatchParser:
             expr,
         )
 
-        # Replace field names with their values
-        def _field_repl(m: re.Match) -> str:
-            field = m.group(0)
-            if field in ("and", "or", "not", "True", "False", "None"):
-                return field
-            value = para.get(field)
-            if isinstance(value, str):
-                return repr(value)
-            return str(value if value is not None else "None")
+        try:
+            tree = ast.parse(expr, mode="eval")
+        except SyntaxError:
+            return False
 
-        expr = re.sub(
-            r"\b(?!and\b|or\b|not\b|True\b|False\b|None\b)([a-zA-Z_]\w*)\b",
-            _field_repl,
-            expr,
-        )
-        return self._safe_eval(expr)
+        # Replace every Name node (field reference) with a Constant node
+        # carrying the actual value from the paragraph dict.
+        tree = _FieldSubstitutor(para).visit(tree)
+        ast.fix_missing_locations(tree)
+        return self._eval_ast(tree)
 
     @staticmethod
-    def _safe_eval(expr: str) -> bool:
-        """Safely evaluate a boolean/comparison expression."""
-        if any(tok in expr for tok in [";", "import", "exec", "eval", "__", "lambda"]):
+    def _eval_ast(tree: ast.AST) -> bool:
+        """Evaluate a pre-substituted match-expression AST.
+
+        Only a strict whitelist of AST node types is permitted.  Anything
+        outside the whitelist (attribute access, calls, subscripts, lambdas,
+        comprehensions, etc.) causes the expression to evaluate to ``False``
+        -- no Python builtins are ever reached.
+        """
+        # ast.Num / ast.Str / ast.NameConstant were deprecated in 3.8 and
+        # removed in 3.12; use getattr so the code works across versions.
+        _num = getattr(ast, "Num", ast.Constant)
+        _str = getattr(ast, "Str", ast.Constant)
+        _nc = getattr(ast, "NameConstant", ast.Constant)
+        _ALLOWED_NODES: frozenset[type[ast.AST]] = frozenset({
+            ast.Expression, ast.Compare, ast.Eq, ast.NotEq,
+            ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+            ast.In, ast.NotIn, ast.Is, ast.IsNot,
+            ast.BoolOp, ast.And, ast.Or,
+            ast.UnaryOp, ast.Not,
+            ast.Name, ast.Constant,
+            ast.List, ast.Tuple, ast.Set,
+            _num, _str, _nc,
+        })
+
+        def _value(node: ast.AST) -> object:
+            """Recursively evaluate an allowed leaf/container node."""
+            if isinstance(node, ast.Constant):
+                return node.value
+            if isinstance(node, _num):       # py<3.8
+                return node.n
+            if isinstance(node, _str):       # py<3.8
+                return node.s
+            if isinstance(node, _nc):  # py<3.8
+                return node.value
+            if isinstance(node, ast.Name):
+                # By the time we reach here, all Name nodes have been
+                # substituted with Constant nodes by _FieldSubstitutor.
+                # A remaining Name is an unexpected reference -> reject.
+                return False
+            if isinstance(node, (ast.List, ast.Tuple)):
+                return type(node.elts)([_value(e) for e in node.elts])
+            if isinstance(node, ast.Set):
+                return {_value(e) for e in node.elts}
+            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+                return not _value(node.operand)
+            raise ValueError(f"disallowed node in value position: {type(node).__name__}")
+
+        _CMP_OP = {
+            ast.Eq: operator.eq, ast.NotEq: operator.ne,
+            ast.Lt: operator.lt, ast.LtE: operator.le,
+            ast.Gt: operator.gt, ast.GtE: operator.ge,
+            ast.Is: operator.is_, ast.IsNot: operator.is_not,
+        }
+
+        def _check(node: ast.AST) -> bool:
+            # expr_context nodes (Load/Store/Del) are structural markers
+            # attached to Name/List/Tuple/Subscript; they carry no semantics
+            # and are harmless, so skip them rather than listing them.
+            if isinstance(node, ast.expr_context):
+                return True
+            if type(node) not in _ALLOWED_NODES:
+                return False
+            for _child in ast.iter_child_nodes(node):
+                if not _check(_child):
+                    return False
+            return True
+
+        def _eval_cmp(node: ast.Compare) -> bool:
+            left = _value(node.left)
+            for op_cls, comparator in zip(node.ops, node.comparators):
+                right = _value(comparator)
+                # ``in`` / ``not in`` are handled inline: membership requires
+                # the right operand to be an actual container.
+                if isinstance(op_cls, ast.In):
+                    if not isinstance(right, (list, tuple, set, frozenset, str)):
+                        return False
+                    if left not in right:
+                        return False
+                elif isinstance(op_cls, ast.NotIn):
+                    if not isinstance(right, (list, tuple, set, frozenset, str)):
+                        return False
+                    if left in right:
+                        return False
+                else:
+                    op_fn = _CMP_OP.get(type(op_cls))
+                    if op_fn is None:
+                        return False
+                    if not op_fn(left, right):
+                        return False
+                left = right
+            return True
+
+        def _eval(node: ast.AST) -> object:
+            if isinstance(node, ast.Compare):
+                return _eval_cmp(node)
+            if isinstance(node, ast.BoolOp):
+                if isinstance(node.op, ast.And):
+                    accum = _eval(node.values[0])
+                    for val in node.values[1:]:
+                        if not accum:
+                            return accum
+                        accum = _eval(val)
+                    return accum
+                # Or
+                accum = _eval(node.values[0])
+                for val in node.values[1:]:
+                    if accum:
+                        return accum
+                    accum = _eval(val)
+                return accum
+            return _value(node)
+
+        if not _check(tree):
             return False
+
         try:
-            result = eval(expr, {"__builtins__": {}},
-                          {"None": None, "True": True, "False": False})
-            return bool(result)
+            return bool(_eval(tree.body))
         except Exception:
             return False
 
@@ -335,8 +486,15 @@ class RuleEngine:
     # -- rule execution --
 
     def validate(self) -> list:
-        """Execute all rules and return a list of error dicts."""
+        """Execute all rules and return a list of error dicts.
+
+        Each error dict may carry ``action`` / ``action_value`` fields when the
+        originating rule declares a ``format_action`` -- the repair path in
+        ``cli._check_fix_core`` reads these directly instead of re-parsing the
+        rule file.
+        """
         self.errors = []
+        self._missing_seen: set[tuple[str, str]] = set()
         paragraphs = self.doc_data.get("paragraphs", [])
         labels = self._classify_paragraphs()
 
@@ -382,23 +540,38 @@ class RuleEngine:
         if op in ("before", "after"):
             self._execute_order_rule(rule, segment_to_indices)
             return
+
+        # format_action is only meaningful for per-paragraph value checks
+        # (eq / in / regex). Structural ops (range / count_* / exists /
+        # order) cannot be repaired on a per-paragraph basis.
+        action = rule.get("format_action") if op in ("eq", "in", "regex") else None
+        # For `in` op the rule value is a list; repair targets the first
+        # allowed value. Callers writing repairable rules should keep the
+        # canonical value first in the list.
+        action_value = rule.get("value")
+        if op == "in" and action_value is not None and isinstance(action_value, list):
+            action_value = action_value[0] if action_value else None
+
         if op == "eq":
             self._op_eq(
                 seg_id, indices, paragraphs,
                 rule.get("field"), rule.get("value"),
                 rule.get("tol", 0), rule.get("msg", ""),
+                action, action_value,
             )
         elif op == "in":
             self._op_in(
                 seg_id, indices, paragraphs,
                 rule.get("field"), rule.get("value"),
                 rule.get("msg", ""),
+                action, action_value,
             )
         elif op == "regex":
             self._op_regex(
                 seg_id, indices, paragraphs,
                 rule.get("field"), rule.get("value"),
                 rule.get("msg", ""),
+                action, action_value,
             )
         elif op == "range":
             self._op_range(
@@ -418,6 +591,7 @@ class RuleEngine:
     def _op_eq(
         self, seg_id: str, indices: list, paragraphs: list,
         field: str, value: Any, tol: float, msg: str,
+        action: Optional[str] = None, action_value: Any = None,
     ) -> None:
         """Check exact equality with optional tolerance."""
         for idx in indices:
@@ -427,6 +601,7 @@ class RuleEngine:
                 continue
             actual = para.get(field)
             if actual is None or actual == "":
+                self._add_missing(seg_id, para, idx, field)
                 continue
             if field == "line_spacing" and isinstance(actual, (int, float)) and actual > 5:
                 continue
@@ -434,21 +609,25 @@ class RuleEngine:
                 if normalize_font(str(actual)) == normalize_font(str(value)):
                     continue
                 self._add_error(seg_id, para, idx, msg or
-                                f"{field} should be {value}, got {actual}")
+                                f"{field} should be {value}, got {actual}",
+                                action=action, action_value=action_value)
             elif isinstance(actual, (int, float)) and isinstance(value, (int, float)):
                 if abs(actual - value) <= tol:
                     continue
                 self._add_error(seg_id, para, idx, msg or
-                                f"{field} should be {value} (tol±{tol}), got {actual}")
+                                f"{field} should be {value} (tol±{tol}), got {actual}",
+                                action=action, action_value=action_value)
             else:
                 if actual == value:
                     continue
                 self._add_error(seg_id, para, idx, msg or
-                                f"{field} should be {value}, got {actual}")
+                                f"{field} should be {value}, got {actual}",
+                                action=action, action_value=action_value)
 
     def _op_in(
         self, seg_id: str, indices: list, paragraphs: list,
         field: str, value: Any, msg: str,
+        action: Optional[str] = None, action_value: Any = None,
     ) -> None:
         """Check that field value is within an allowed list."""
         if not isinstance(value, list):
@@ -461,6 +640,7 @@ class RuleEngine:
                 continue
             actual = para.get(field)
             if actual is None or actual == "":
+                self._add_missing(seg_id, para, idx, field)
                 continue
             if field == "font" and actual:
                 if normalize_font(str(actual)) in value_norm:
@@ -469,11 +649,13 @@ class RuleEngine:
                 if actual in value:
                     continue
             self._add_error(seg_id, para, idx, msg or
-                            f"{field} should be one of {value}, got {actual}")
+                            f"{field} should be one of {value}, got {actual}",
+                            action=action, action_value=action_value)
 
     def _op_regex(
         self, seg_id: str, indices: list, paragraphs: list,
         field: str, pattern: str, msg: str,
+        action: Optional[str] = None, action_value: Any = None,
     ) -> None:
         """Check that field value matches a regex pattern."""
         try:
@@ -490,11 +672,13 @@ class RuleEngine:
             para = paragraphs[idx]
             actual = para.get(field)
             if actual is None:
+                self._add_missing(seg_id, para, idx, field)
                 continue
             if regex.search(str(actual)):
                 continue
             self._add_error(seg_id, para, idx, msg or
-                            f"{field} should match {pattern}, got {actual}")
+                            f"{field} should match {pattern}, got {actual}",
+                            action=action, action_value=action_value)
 
     def _op_range(
         self, seg_id: str, indices: list, paragraphs: list,
@@ -514,6 +698,8 @@ class RuleEngine:
             para = paragraphs[idx]
             actual = para.get(field)
             if actual is None or not isinstance(actual, (int, float)):
+                if actual is None:
+                    self._add_missing(seg_id, para, idx, field)
                 continue
             if min_val <= actual <= max_val:
                 continue
@@ -556,18 +742,65 @@ class RuleEngine:
     def _add_error(
         self, seg_id: str, para: dict, para_idx: int, msg: str,
         err_type: str = "format",
+        action: Optional[str] = None,
+        action_value: Any = None,
     ) -> None:
-        """Append a format error to the engine's error list."""
+        """Append a format error to the engine's error list.
+
+        When the originating rule declares a ``format_action``, ``action`` and
+        ``action_value`` are carried on the error dict so the repair path can
+        apply the fix without re-parsing the rule file.
+        """
         if para.get("page") is not None:
             loc = f"Page {para.get('page')}, Paragraph {para_idx}"
         else:
             loc = f"Paragraph {para_idx}"
-        self.errors.append({
+        err: dict = {
             "type": err_type,
             "description": msg,
             "location": loc,
             "paragraph_index": para.get("paragraph_index", para_idx),
             "segment": seg_id,
+        }
+        if action:
+            err["action"] = action
+            err["action_value"] = action_value
+        self.errors.append(err)
+
+    def _add_missing(
+        self, seg_id: str, para: dict, para_idx: int, field: str,
+    ) -> None:
+        """Record a missing-field warning.
+
+        A missing field means the extractor could not read the value -- it is
+        NOT the same as "the field is compliant". Emitting a ``missing``-type
+        error makes this visible in the report instead of silently treating
+        the paragraph as passing.
+
+        Duplicate missing reports for the same (paragraph_index, field) are
+        deduplicated to avoid flooding the report when multiple rules check
+        the same field on the same paragraph.
+        """
+        pidx = para.get("paragraph_index", para_idx)
+        dedup_key = (str(pidx), field)
+        if dedup_key in self._missing_seen:
+            return
+        self._missing_seen.add(dedup_key)
+        loc = (
+            f"Page {para.get('page')}, Paragraph {pidx}"
+            if para.get("page") is not None
+            else f"Paragraph {pidx}"
+        )
+        self.errors.append({
+            "type": "missing",
+            "description": (
+                f"字段 '{field}' 无法读取（提取器未返回该字段，"
+                "可能是文档格式限制或该段落无此属性）"
+            ),
+            "location": loc,
+            "paragraph_index": pidx,
+            "segment": seg_id,
+            "field": field,
         })
 
     def _execute_order_rule(self, rule: dict, segment_to_indices: dict) -> None:

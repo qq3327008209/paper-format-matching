@@ -8,9 +8,17 @@ import yaml
 
 from engine.paths import resolve
 
-DEFAULT_CONFIG_PATH = resolve("config", "api_config.yaml")
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
+
+
+def _default_config_path() -> str:
+    """返回 config/api_config.yaml 的绝对路径。
+
+    用函数而非模块级常量，避免在 Nuitka onefile 下、sys.argv 填充之前
+    的极早期导入阶段过早求值。
+    """
+    return resolve("config", "api_config.yaml")
 
 
 class LLMClient:
@@ -23,7 +31,7 @@ class LLMClient:
     """
 
     def __init__(self, config_path=None):
-        self.config_path = config_path or DEFAULT_CONFIG_PATH
+        self.config_path = config_path or _default_config_path()
         self.api_key = None
         self.base_url = DEFAULT_BASE_URL
         self.model = DEFAULT_MODEL
@@ -69,11 +77,11 @@ class LLMClient:
         """Return True if api_key is set."""
         return bool(self.api_key)
 
-    def chat(self, system_prompt, user_prompt, temperature=0.3):
-        """Call the LLM API and return the response text.
+    def _call_api(self, messages: list[dict], temperature: float) -> str:
+        """Internal: send ``messages`` to the configured OpenAI-compatible API.
 
-        Uses the ``openai`` Python SDK with a custom base_url so it works
-        with any OpenAI-compatible endpoint (DeepSeek, OpenAI, Kimi, GLM, …).
+        Lazily instantiates the ``openai.OpenAI`` client on first use and
+        caches it for the lifetime of this ``LLMClient`` instance.
 
         Returns:
             The assistant's message content as a string.
@@ -98,15 +106,32 @@ class LLMClient:
         try:
             response = self._client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                messages=messages,
                 temperature=temperature,
             )
             return response.choices[0].message.content
         except Exception as exc:
             raise RuntimeError(f"LLM API call failed: {exc}") from exc
+
+    def chat(self, system_prompt, user_prompt, temperature=0.3):
+        """Call the LLM API and return the response text.
+
+        Uses the ``openai`` Python SDK with a custom base_url so it works
+        with any OpenAI-compatible endpoint (DeepSeek, OpenAI, Kimi, GLM, …).
+
+        Returns:
+            The assistant's message content as a string.
+
+        Raises:
+            RuntimeError: if not configured or the API call fails.
+        """
+        return self._call_api(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature,
+        )
 
     def chat_messages(self, messages, temperature=0.5):
         """多轮对话：传入完整 messages 列表，返回助手回复文本。
@@ -125,29 +150,7 @@ class LLMClient:
         Raises:
             RuntimeError: 未配置或 API 调用失败。
         """
-        if not self.is_configured():
-            raise RuntimeError(
-                "LLM client not configured. Call set_config() first."
-            )
-        try:
-            from openai import OpenAI
-        except ImportError as exc:
-            raise RuntimeError(
-                "openai package not installed. Run: pip install openai"
-            ) from exc
-        if self._client is None:
-            self._client = OpenAI(
-                api_key=self.api_key, base_url=self.base_url
-            )
-        try:
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-            )
-            return response.choices[0].message.content
-        except Exception as exc:
-            raise RuntimeError(f"LLM API call failed: {exc}") from exc
+        return self._call_api(messages, temperature)
 
     def test_connection(self):
         """发一个最小请求测试 API 配置是否有效。

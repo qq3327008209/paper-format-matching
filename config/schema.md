@@ -133,14 +133,17 @@ segments 按声明顺序匹配，**第一个匹配成功的 segment 生效**。
 ```yaml
 - segment: body
   field: font
-  op: in
-  value: ["仿宋_GB2312", "仿宋"]
+  op: eq
+  value: "仿宋_GB2312"
   msg: "正文字体应为仿宋_GB2312"
   file_types: [docx, doc]
   format_action: set_font     # 校验失败时调用 format.ops 设置字体为 value
 ```
 
-> 注意：`format_action` 仅声明修复意图，具体执行由 `format.ops` 模块实现；若未配置该字段，校验失败只报错不修复。
+> **修复支持矩阵**：`format_action` 仅对按段落逐条检查的 op 生效（`eq` / `in` / `regex`）。
+> 结构类 op（`range` / `count_min` / `count_max` / `exists` / `before` / `after`）无法按段落自动修复，即使写了 `format_action` 也会被引擎忽略。
+>
+> **`in` op 的修复值**：`value` 是允许值列表（如 `["仿宋_GB2312", "仿宋"]`），修复时取**列表第一个值**作为目标。建议把首选字体放在列表首位。
 
 ## rules 的 op 完整清单（10 个）
 

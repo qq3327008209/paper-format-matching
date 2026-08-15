@@ -12,6 +12,16 @@ logger = logging.getLogger(__name__)
 class Reporter:
     """Generate human-readable reports from rule-engine error lists."""
 
+    # Errors whose ``type`` indicates a field could not be read by the
+    # extractor (as opposed to a genuine format violation).  These are
+    # surfaced as warnings rather than errors in summaries.
+    _WARNING_TYPES = {"missing"}
+
+    @staticmethod
+    def is_warning(err: dict) -> bool:
+        """Return True for errors that are warnings rather than failures."""
+        return err.get("type", "") in Reporter._WARNING_TYPES
+
     def to_csv_string(self, errors: list[dict],
                       doc_path: str = "",
                       domain: str = "") -> str:
@@ -28,11 +38,13 @@ class Reporter:
         buf = io.StringIO()
         writer = csv.writer(buf, lineterminator="\n")
         # Header
-        writer.writerow(["#", "Type", "Description", "Location",
-                         "Paragraph", "Segment"])
+        writer.writerow(["#", "Severity", "Type", "Description",
+                         "Location", "Paragraph", "Segment"])
         for i, err in enumerate(errors, start=1):
+            severity = "警告" if self.is_warning(err) else "错误"
             writer.writerow([
                 i,
+                severity,
                 err.get("type", ""),
                 err.get("description", ""),
                 err.get("location", ""),
@@ -51,7 +63,7 @@ class Reporter:
             errors: Error list.
             output_path: Destination file path (``.csv`` extension recommended).
             doc_path: Source document path.
-            domain: Rule domain.
+            domain: Rule domain string.
 
         Returns:
             The output file path.
@@ -61,6 +73,42 @@ class Reporter:
         with open(output_path, "w", encoding="utf-8-sig", newline="") as fh:
             fh.write(content)
         logger.info("CSV report saved: %s (%d errors)", output_path, len(errors))
+        return output_path
+
+    def save_batch_csv(self,
+                       results: list[tuple[str, list[dict]]],
+                       output_path: str) -> str:
+        """Write a merged CSV report for multiple documents.
+
+        Args:
+            results: List of ``(file_path, errors)`` tuples, in the order they
+                should appear in the report.
+            output_path: Destination file path.
+
+        Returns:
+            The output file path.
+        """
+        buf = io.StringIO()
+        writer = csv.writer(buf, lineterminator="\n")
+        writer.writerow(["File", "#", "Severity", "Type", "Description",
+                         "Location", "Paragraph", "Segment"])
+        for f, errors in results:
+            for j, err in enumerate(errors, 1):
+                severity = "警告" if self.is_warning(err) else "错误"
+                writer.writerow([
+                    f,
+                    j,
+                    severity,
+                    err.get("type", ""),
+                    err.get("description", ""),
+                    err.get("location", ""),
+                    err.get("paragraph_index", ""),
+                    err.get("segment", ""),
+                ])
+        content = buf.getvalue()
+        with open(output_path, "w", encoding="utf-8-sig", newline="") as fh:
+            fh.write(content)
+        logger.info("Batch CSV report saved: %s", output_path)
         return output_path
 
     def summary_text(self, errors: list[dict],
@@ -79,17 +127,24 @@ class Reporter:
         lines: list[str] = []
         lines.append(f"Document: {doc_path or '(stdin)'}")
         lines.append(f"Domain:   {domain or '(none)'}")
-        lines.append(f"Errors:   {len(errors)}")
+
+        warnings = [e for e in errors if self.is_warning(e)]
+        failures = [e for e in errors if not self.is_warning(e)]
+        lines.append(f"Errors:   {len(failures)}  |  Warnings: {len(warnings)}")
         lines.append("")
+
         type_counts: dict[str, int] = {}
         for err in errors:
             etype = err.get("type", "unknown")
             type_counts[etype] = type_counts.get(etype, 0) + 1
         for etype, count in sorted(type_counts.items()):
-            lines.append(f"  {etype}: {count}")
+            tag = "[警告]" if etype in self._WARNING_TYPES else "[错误]"
+            lines.append(f"  {tag} {etype}: {count}")
         lines.append("")
+
         for i, err in enumerate(errors, start=1):
-            lines.append(f"[{i}] [{err.get('type', '?')}] {err.get('description', '')}")
+            tag = "警告" if self.is_warning(err) else "错误"
+            lines.append(f"[{i}] [{tag}] {err.get('description', '')}")
             loc = err.get("location", "")
             if loc:
                 lines.append(f"    -> {loc}")

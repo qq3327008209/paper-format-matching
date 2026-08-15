@@ -32,6 +32,9 @@ RE_HEADING_H4 = re.compile(r"^[（\(]\d+[）\)]")
 # Attachment marker.
 RE_ATTACHMENT = re.compile(r"^附件\s*(\d+|[一二三四五六七八九十百千万零]+)?\s*[:：]?$")
 
+# Secondary-heading inline title: e.g. "（一）标题内容" captures the title.
+RE_H2_INLINE_TITLE = re.compile(r"^[（\(](.+?)[）\)](.*)", re.DOTALL)
+
 # Explicit official-document title patterns (copied from formatter.py logic).
 RE_TITLE_EXPLICIT = [
     re.compile(r"^关于.+的(通知|报告|请示|函|意见|决定|公告|通报|批复|说明|方案|总结|汇报|复函|答复|建议)$"),

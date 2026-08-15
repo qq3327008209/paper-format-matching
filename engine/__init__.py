@@ -1,5 +1,7 @@
 """Engine package: rule engine, paragraph extractor, annotator, and LLM client."""
 
+__version__ = "4.2.0"
+
 from .rule_engine import RuleEngine, MatchParser, normalize_font
 from .extractors import DocxExtractor, PdfExtractor, DocExtractor, get_extractor
 from .annotator import annotate_document
