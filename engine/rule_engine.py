@@ -9,12 +9,13 @@ Rule file structure is documented in schema.md.
 
 import ast
 import logging
-import operator
 import os
 import re
 from typing import Any, Optional
 
 import yaml
+
+from ._whitelist import safe_eval
 
 logger = logging.getLogger(__name__)
 
@@ -238,122 +239,12 @@ class MatchParser:
     def _eval_ast(tree: ast.AST) -> bool:
         """Evaluate a pre-substituted match-expression AST.
 
-        Only a strict whitelist of AST node types is permitted.  Anything
-        outside the whitelist (attribute access, calls, subscripts, lambdas,
-        comprehensions, etc.) causes the expression to evaluate to ``False``
-        -- no Python builtins are ever reached.
+        Delegates to :func:`engine._whitelist.safe_eval`, which enforces a
+        strict node-type whitelist (no attribute access, calls, subscripts,
+        lambdas, comprehensions, etc.) and returns ``False`` for anything
+        outside the whitelist or any evaluation error.
         """
-        # ast.Num / ast.Str / ast.NameConstant were deprecated in 3.8 and
-        # removed in 3.12; use getattr so the code works across versions.
-        _num = getattr(ast, "Num", ast.Constant)
-        _str = getattr(ast, "Str", ast.Constant)
-        _nc = getattr(ast, "NameConstant", ast.Constant)
-        _ALLOWED_NODES: frozenset[type[ast.AST]] = frozenset({
-            ast.Expression, ast.Compare, ast.Eq, ast.NotEq,
-            ast.Lt, ast.LtE, ast.Gt, ast.GtE,
-            ast.In, ast.NotIn, ast.Is, ast.IsNot,
-            ast.BoolOp, ast.And, ast.Or,
-            ast.UnaryOp, ast.Not,
-            ast.Name, ast.Constant,
-            ast.List, ast.Tuple, ast.Set,
-            _num, _str, _nc,
-        })
-
-        def _value(node: ast.AST) -> object:
-            """Recursively evaluate an allowed leaf/container node."""
-            if isinstance(node, ast.Constant):
-                return node.value
-            if isinstance(node, _num):       # py<3.8
-                return node.n
-            if isinstance(node, _str):       # py<3.8
-                return node.s
-            if isinstance(node, _nc):  # py<3.8
-                return node.value
-            if isinstance(node, ast.Name):
-                # By the time we reach here, all Name nodes have been
-                # substituted with Constant nodes by _FieldSubstitutor.
-                # A remaining Name is an unexpected reference -> reject.
-                return False
-            if isinstance(node, (ast.List, ast.Tuple)):
-                return type(node.elts)([_value(e) for e in node.elts])
-            if isinstance(node, ast.Set):
-                return {_value(e) for e in node.elts}
-            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-                return not _value(node.operand)
-            raise ValueError(f"disallowed node in value position: {type(node).__name__}")
-
-        _CMP_OP = {
-            ast.Eq: operator.eq, ast.NotEq: operator.ne,
-            ast.Lt: operator.lt, ast.LtE: operator.le,
-            ast.Gt: operator.gt, ast.GtE: operator.ge,
-            ast.Is: operator.is_, ast.IsNot: operator.is_not,
-        }
-
-        def _check(node: ast.AST) -> bool:
-            # expr_context nodes (Load/Store/Del) are structural markers
-            # attached to Name/List/Tuple/Subscript; they carry no semantics
-            # and are harmless, so skip them rather than listing them.
-            if isinstance(node, ast.expr_context):
-                return True
-            if type(node) not in _ALLOWED_NODES:
-                return False
-            for _child in ast.iter_child_nodes(node):
-                if not _check(_child):
-                    return False
-            return True
-
-        def _eval_cmp(node: ast.Compare) -> bool:
-            left = _value(node.left)
-            for op_cls, comparator in zip(node.ops, node.comparators):
-                right = _value(comparator)
-                # ``in`` / ``not in`` are handled inline: membership requires
-                # the right operand to be an actual container.
-                if isinstance(op_cls, ast.In):
-                    if not isinstance(right, (list, tuple, set, frozenset, str)):
-                        return False
-                    if left not in right:
-                        return False
-                elif isinstance(op_cls, ast.NotIn):
-                    if not isinstance(right, (list, tuple, set, frozenset, str)):
-                        return False
-                    if left in right:
-                        return False
-                else:
-                    op_fn = _CMP_OP.get(type(op_cls))
-                    if op_fn is None:
-                        return False
-                    if not op_fn(left, right):
-                        return False
-                left = right
-            return True
-
-        def _eval(node: ast.AST) -> object:
-            if isinstance(node, ast.Compare):
-                return _eval_cmp(node)
-            if isinstance(node, ast.BoolOp):
-                if isinstance(node.op, ast.And):
-                    accum = _eval(node.values[0])
-                    for val in node.values[1:]:
-                        if not accum:
-                            return accum
-                        accum = _eval(val)
-                    return accum
-                # Or
-                accum = _eval(node.values[0])
-                for val in node.values[1:]:
-                    if accum:
-                        return accum
-                    accum = _eval(val)
-                return accum
-            return _value(node)
-
-        if not _check(tree):
-            return False
-
-        try:
-            return bool(_eval(tree.body))
-        except Exception:
-            return False
+        return safe_eval(tree)
 
 
 # ---- Rule execution engine ----
@@ -392,9 +283,7 @@ class RuleEngine:
         return {
             "schema": data.get("schema", "contract-v1"),
             "domain": data.get("domain", ""),
-            "segments": data.get("segments") or [],
-            "rules": data.get("rules") or [],
-            "skip_files": data.get("skip_files") or [],
+            **{k: data.get(k) or [] for k in ("segments", "rules", "skip_files")},
         }
 
     # -- paragraph classification --
@@ -521,6 +410,52 @@ class RuleEngine:
                 })
         return self.errors
 
+    # -- op dispatch table --
+    # Each handler receives (rule, indices, paragraphs, labels) and is
+    # responsible for extracting the fields it needs from ``rule``.  Adding a
+    # new op only requires appending a row here; the handler method itself
+    # lives alongside the other ``_op_*`` implementations below.
+
+    _OP_TABLE = {
+        "eq": lambda self, rule, indices, paragraphs, labels: self._op_eq(
+            rule.get("segment"), indices, paragraphs,
+            rule.get("field"), rule.get("value"),
+            rule.get("tol", 0), rule.get("msg", ""),
+            rule.get("format_action"), rule.get("value"),
+        ),
+        "in": lambda self, rule, indices, paragraphs, labels: self._op_in(
+            rule.get("segment"), indices, paragraphs,
+            rule.get("field"), rule.get("value"),
+            rule.get("msg", ""),
+            rule.get("format_action"),
+            (
+                rule.get("value")[0]
+                if rule.get("value") and isinstance(rule.get("value"), list)
+                else rule.get("value")
+            ),
+        ),
+        "regex": lambda self, rule, indices, paragraphs, labels: self._op_regex(
+            rule.get("segment"), indices, paragraphs,
+            rule.get("field"), rule.get("value"),
+            rule.get("msg", ""),
+            rule.get("format_action"), rule.get("value"),
+        ),
+        "range": lambda self, rule, indices, paragraphs, labels: self._op_range(
+            rule.get("segment"), indices, paragraphs,
+            rule.get("field"), rule.get("value"),
+            rule.get("msg", ""),
+        ),
+        "count_min": lambda self, rule, indices, paragraphs, labels: self._op_count_min(
+            rule.get("segment"), indices, rule.get("value", 0), rule.get("msg", ""),
+        ),
+        "count_max": lambda self, rule, indices, paragraphs, labels: self._op_count_max(
+            rule.get("segment"), indices, rule.get("value", 0), rule.get("msg", ""),
+        ),
+        "exists": lambda self, rule, indices, paragraphs, labels: self._op_exists(
+            rule.get("segment"), indices, rule.get("msg", ""),
+        ),
+    }
+
     def _execute_rule(
         self,
         rule: dict,
@@ -528,7 +463,7 @@ class RuleEngine:
         paragraphs: list,
         labels: list,
     ) -> None:
-        """Dispatch a single rule to the appropriate op handler."""
+        """Dispatch a single rule to the appropriate op handler via ``_OP_TABLE``."""
         seg_id = rule.get("segment")
         op = rule.get("op")
         if not seg_id or not op:
@@ -541,50 +476,10 @@ class RuleEngine:
             self._execute_order_rule(rule, segment_to_indices)
             return
 
-        # format_action is only meaningful for per-paragraph value checks
-        # (eq / in / regex). Structural ops (range / count_* / exists /
-        # order) cannot be repaired on a per-paragraph basis.
-        action = rule.get("format_action") if op in ("eq", "in", "regex") else None
-        # For `in` op the rule value is a list; repair targets the first
-        # allowed value. Callers writing repairable rules should keep the
-        # canonical value first in the list.
-        action_value = rule.get("value")
-        if op == "in" and action_value is not None and isinstance(action_value, list):
-            action_value = action_value[0] if action_value else None
-
-        if op == "eq":
-            self._op_eq(
-                seg_id, indices, paragraphs,
-                rule.get("field"), rule.get("value"),
-                rule.get("tol", 0), rule.get("msg", ""),
-                action, action_value,
-            )
-        elif op == "in":
-            self._op_in(
-                seg_id, indices, paragraphs,
-                rule.get("field"), rule.get("value"),
-                rule.get("msg", ""),
-                action, action_value,
-            )
-        elif op == "regex":
-            self._op_regex(
-                seg_id, indices, paragraphs,
-                rule.get("field"), rule.get("value"),
-                rule.get("msg", ""),
-                action, action_value,
-            )
-        elif op == "range":
-            self._op_range(
-                seg_id, indices, paragraphs,
-                rule.get("field"), rule.get("value"),
-                rule.get("msg", ""),
-            )
-        elif op == "count_min":
-            self._op_count_min(seg_id, indices, rule.get("value", 0), rule.get("msg", ""))
-        elif op == "count_max":
-            self._op_count_max(seg_id, indices, rule.get("value", 0), rule.get("msg", ""))
-        elif op == "exists":
-            self._op_exists(seg_id, indices, rule.get("msg", ""))
+        handler = self._OP_TABLE.get(op)
+        if handler is None:
+            return
+        handler(self, rule, indices, paragraphs, labels)
 
     # -- op implementations --
 
