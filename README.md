@@ -36,7 +36,7 @@
 | **Word 批注** | `/annotate` 生成带批注的 Word 文档，定位每个错误 |
 | **完全离线** | 校验与排版阶段不依赖网络，零隐私泄露 |
 | **LLM 生成规则** | `/get-rules` 从 Word 模板或文本生成 YAML 规则；`/chat` 多轮对话答疑 |
-| **端到端自检** | `/test` 一键跑通 校验→格式化→修复→批注 全流程，不烧 token |
+| **端到端自检** | `/test` 一键跑通 校验→格式化→修复→批注 全流程，产物落 examples/，便于直接打开查看 |
 
 ## 📁 项目结构
 
@@ -73,10 +73,11 @@ paper-format-matching/
 │   ├── schema.md                   # 规则文件 Schema 契约（必读）
 │   ├── prompt_template.md          # AI 生成规则的提示词模板
 │   └── api_config.yaml.example     # LLM API 配置示例（复制为 api_config.yaml 使用）
-├── examples/                       # ⭐ 示例与样本
-│   ├── rules_example.yaml          # 毕业论文规则示例
-│   ├── make_sample_paper.py        # 生成样本 docx（含 4 处故意错误）
-│   └── sample_paper.docx           # 示例文档
+├── examples/                       # ⭐ /test 自检产物缓存
+│   ├── sample_for_test.docx        # 预置样本（含故意错误，用于自检演示）
+│   ├── sample_formatted.docx       # /test 跑出：格式化产物
+│   ├── sample_fixed.docx           # /test 跑出：修复产物
+│   └── sample_annotated.docx       # /test 跑出：批注产物
 ├── tests/                          # 测试（127 个）
 │   ├── test_rule_engine_*.py       # 规则引擎单元测试
 │   ├── test_punctuation.py         # 标点规范化测试
@@ -121,6 +122,35 @@ python cli.py
 
 输入 `/` 立即弹出命令菜单，方向键选择、Tab 补全。
 
+### 3. 工作目录（input / output / examples）
+
+首次启动会自动在 exe / 项目根同级创建工作目录。`examples/` 仓库自带。
+
+```
+paper-format-matching/          ← exe 或 cli.py 所在目录
+├── config/                     ← YAML 规则文件、API 配置
+├── examples/                   ← /test 自检产物缓存（自带预置样本）
+│   ├── sample_for_test.docx    # 预置种子（含故意错误）
+│   ├── sample_formatted.docx   # /test 跑出
+│   ├── sample_fixed.docx       # /test 跑出
+│   └── sample_annotated.docx   # /test 跑出
+├── input/                      ← 把待处理文档丢到这里
+├── output/                     ← 格式化 / 修复 / 批注产物
+├── reports/                    ← 校验报告 CSV
+└── ...
+```
+
+| 命令 | 默认行为 |
+|------|----------|
+| `/check 报告.docx` | 从 `input/报告.docx` 读取，CSV 报告落 `reports/` |
+| `/format 报告.docx` | 从 `input/` 读，产物落 `output/报告_formatted.docx` |
+| `/check-fix 报告.docx` | 从 `input/` 读，产物落 `output/报告_fixed.docx` |
+| `/annotate` | 基于上次校验结果，产物落 `output/<原名>_annotated.docx` |
+| `/check-dir` `/format-dir` `/check-fix-dir` | 不带参数默认操作整个 `input/`，产物落 `output/` |
+| `/test` | 跑 `examples/sample_for_test.docx` 上的校验→格式化→修复→批注，产物全部落 `examples/` |
+
+传**绝对路径**完全按原路径走，行为不受影响——上述默认只对裸文件名/相对路径生效。
+
 ### 3. 常用命令
 
 | 命令 | 说明 |
@@ -136,7 +166,7 @@ python cli.py
 | `/set-key` | 设置 LLM API Key（OpenAI 兼容接口） |
 | `/test-api` | 测试 LLM API 配置是否有效（发最小请求） |
 | `/chat` | 进入 LLM 多轮对话（问规则怎么写、格式怎么定） |
-| `/test` | 端到端自检：校验→格式化→修复→批注，不烧 token |
+| `/test` | 端到端自检：校验→格式化→修复→批注 全流程，产物落 examples/，不烧 token |
 | `/preset <name>` | 切换预设（official/academic/legal） |
 | `/config` | 查看当前配置 |
 | `/save-config <file>` | 保存配置到文件 |
@@ -182,22 +212,37 @@ API 配置已保存到 config/api_config.yaml
 ### 使用示例
 
 ```
-> /check ./docs/report.docx
+# 把待处理的论文放进 input/
+> /check 论文.docx
 校验中...
-Document: ./docs/report.docx
+Document: input/论文.docx
 Errors:   3
-报告已保存: reports/report_check_20260801_120000.csv
+报告已保存: reports/论文_check_20260801_120000.csv
 
-> /format ./docs/report.docx --preset official
+# 排版 / 修复，产物自动落到 output/
+> /format 论文.docx --preset official
 排版中... (预设: 公文格式)
-排版完成: ./docs/report_formatted.docx
+排版完成: output/论文_formatted.docx
 
-> /check-dir ./batch/
+> /check-fix 论文.docx
+校验并修复中...
+修复完成: 共应用 5 处修复，已保存到 output/论文_fixed.docx
+
+# 批注基于最近一次校验
+> /annotate
+标注完成: output/论文_annotated.docx
+
+# 批量操作：直接扫整个 input/
+> /check-dir
 共发现 5 个文件，开始批量校验...
-[1/5] student1.docx - 5 处问题
-[2/5] student2.docx - 0 处问题
-[3/5] student3.docx - 12 处问题
+[1/5] 论文1.docx - 5 处问题
+[2/5] 论文2.docx - 0 处问题
+[3/5] 论文3.docx - 12 处问题
 合并报告已保存: reports/batch_check_20260801_120100.csv
+
+> /format-dir --preset academic
+共发现 5 个文件，开始批量排版... (预设: 学术论文)
+批量排版完成。产物在 output/
 ```
 
 ## 📋 规则文件 Schema
@@ -280,9 +325,11 @@ python -m pytest tests/test_match_parser_security.py -q
 
 ## 📖 相关文档
 
-- **[config/schema.md](config/schema.md)**：规则文件 Schema 契约（必读，写规则时必须对照）
+- **[config/schema.md](config/schema.md)**：规则文件 Schema 契约（必读，写规则时必须对照，v2 支持字符单位缩进、中英文字体分开、编号连续性等）
 - **[config/prompt_template.md](config/prompt_template.md)**：AI 生成规则的提示词模板
-- **[examples/](examples/)**：规则文件示例 + 样本 docx 生成脚本
+- **[config/schools/](config/schools/)**：学校专属规则文件目录（每所学校/每份规范一份 yaml，`/check <file> --rules config/schools/xxx.yaml` 即按该校规范校验）
+  - `rules_湖北汽院_优秀小论文.yaml`：湖北汽车工业学院优秀毕业设计（小论文）撰写格式规范（依据附件12）
+- **[examples/](examples/)**：`/test` 自检产物缓存（含预置样本 sample_for_test.docx）
 
 ## 📄 许可证
 

@@ -1,11 +1,23 @@
-"""Processing pipeline: orchestrates formatting operations in sequence."""
+"""Processing pipeline: orchestrates formatting operations in sequence.
 
+Each step calls a focused sub-module on ``FormatEngine`` directly (no facade
+methods on the engine). The pipeline order:
+
+1. Convert source file to .docx (DocumentLoader)
+2. Normalize punctuation (SymbolNormalizer)
+3. Detect and format figure/table captions
+4. Find and format main title & subtitle (ParagraphFormatter)
+5. Iterate paragraphs: classify -> apply font/indent/alignment (ParagraphFormatter)
+6. Format tables (TableOp)
+7. Apply page setup (PageSetupOp)
+8. Save output
+"""
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
 
-from docx import Document
+from docx.text.paragraph import Paragraph
 
 if TYPE_CHECKING:
     from .engine import FormatEngine
@@ -14,26 +26,15 @@ logger = logging.getLogger(__name__)
 
 
 class Pipeline:
-    """Orchestrates the sequence of formatting operations.
-
-    Each step is a method on ``FormatEngine`` called in order:
-    1. Convert source file to .docx
-    2. Pre-process (accept revisions, convert auto-numbering)
-    3. Normalize punctuation
-    4. Detect and format figures/tables captions
-    5. Find and format main title & subtitle
-    6. Iterate paragraphs: classify -> apply font/indent/alignment
-    7. Format tables
-    8. Apply page setup (margins, page numbers)
-    9. Save output
-    """
+    """Orchestrate the sequence of formatting operations."""
 
     def __init__(self, engine: "FormatEngine") -> None:
-        """
-        Args:
-            engine: The ``FormatEngine`` instance that owns this pipeline.
-        """
         self.engine = engine
+        self._formatter = engine._paragraph_formatter
+        self._symbol_normalizer = engine._symbol_normalizer
+        self._table_op = engine._table_op
+        self._loader = engine._loader
+        self._page_setup = engine._page_setup
 
     def run(self, input_path: str, output_path: str) -> str:
         """Execute the full formatting pipeline.
@@ -48,42 +49,35 @@ class Pipeline:
         Raises:
             RuntimeError: If conversion fails or document is empty.
         """
-        doc = self.engine.load_document(input_path)
-        is_from_txt = self.engine._file_is_text(input_path)
+        doc = self._loader.load(input_path)
+        is_from_txt = self._loader.is_text_input(input_path)
 
         if self.engine.config.get("normalize_punctuation", False):
-            self.engine._normalize_document_symbols(doc)
+            self._symbol_normalizer.normalize_document_symbols(doc)
 
-        all_blocks = list(self.engine._iter_block_items(doc))
+        all_blocks = list(self._formatter._iter_block_items(doc))
         processed: set[int] = set()
         apply_color = not is_from_txt
 
-        # Detect figure/table captions
         if not is_from_txt:
             self._detect_captions(doc, all_blocks, processed, apply_color)
 
-        # Title and subtitle
-        title_indices, subtitle_indices = self.engine._find_title_paragraphs(
-            doc, is_from_txt
+        title_indices, subtitle_indices = self._formatter.find_title_paragraphs(
+            doc, is_from_txt,
         )
         for idx in title_indices:
             processed.add(idx)
         for idx in subtitle_indices:
             processed.add(idx)
 
-        # Main paragraph loop
         self._format_paragraphs(
             doc, all_blocks, processed, title_indices, subtitle_indices,
             is_from_txt, apply_color,
         )
 
-        # Tables
-        self.engine._format_tables(doc, apply_color=apply_color)
+        self._table_op.format_all(doc, apply_color=apply_color)
+        self._page_setup.apply(doc, is_from_txt=is_from_txt)
 
-        # Page setup
-        self.engine._apply_page_setup(doc, is_from_txt=is_from_txt)
-
-        # Save
         logger.info("Saving formatted document: %s", output_path)
         doc.save(output_path)
         return output_path
@@ -93,9 +87,10 @@ class Pipeline:
     ) -> None:
         """Detect and format figure/table caption paragraphs."""
         from docx.enum.text import WD_ALIGN_PARAGRAPH
+
         cfg = self.engine.config
         for idx, block in enumerate(all_blocks):
-            is_pic = self.engine._has_drawing(block)
+            is_pic = _block_has_drawing(block)
             is_table = type(block).__name__ == "Table"
             if not (is_pic or is_table):
                 continue
@@ -117,7 +112,7 @@ class Pipeline:
                         f = cfg.get(font_key, cfg.get("body_font", "仿宋_GB2312"))
                         s = cfg.get(size_key, cfg.get("body_size", 12))
                         for run in candidate.runs:
-                            self.engine._set_run_font(run, f, s, set_color=apply_color)
+                            self._formatter._set_run_font(run, f, s, set_color=apply_color)
                         processed.add(i)
                         caption_found = True
                         break
@@ -130,8 +125,6 @@ class Pipeline:
         is_from_txt, apply_color,
     ) -> None:
         """Main paragraph formatting loop."""
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
-        from docx.shared import Pt
         from format.ops.paragraph import ParagraphOp
         from format.ops.font import FontOp
 
@@ -150,13 +143,20 @@ class Pipeline:
             if not block.text.strip():
                 block_idx += 1
                 continue
-
-            # Skip tables (handled separately)
             if type(block).__name__ == "Table":
                 block_idx += 1
                 continue
 
-            self.engine._apply_para_format(
+            self._formatter.apply_para_format(
                 block, font_op, para_op, is_from_txt, apply_color,
             )
             block_idx += 1
+
+
+def _block_has_drawing(block) -> bool:
+    """Return True when a paragraph block carries a drawing/picture."""
+    from format.ops.symbol_normalizer import has_drawing_or_pict
+
+    if isinstance(block, Paragraph):
+        return has_drawing_or_pict(block)
+    return False

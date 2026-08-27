@@ -454,6 +454,21 @@ class RuleEngine:
         "exists": lambda self, rule, indices, paragraphs, labels: self._op_exists(
             rule.get("segment"), indices, rule.get("msg", ""),
         ),
+        # 序列编号连续性校验：使用标准 (rule, indices, paragraphs, labels) 签名
+        "sequence_consecutive": lambda self, rule, indices, paragraphs, labels: self._op_sequence_consecutive(
+            rule, indices, paragraphs, labels,
+        ),
+        # 文档级 op：仅需 rule，不依赖段索引
+        "page_margins": lambda self, rule, indices, paragraphs, labels: self._op_page_margins(rule),
+        "page_size": lambda self, rule, indices, paragraphs, labels: self._op_page_size(rule),
+        # 需要 segment_to_indices 的文档级 op：lambda 多接收一个 stni 参数，
+        # 由 _execute_rule 在分发时额外传入
+        "cross_ref_order": lambda self, rule, indices, paragraphs, labels, stni: self._op_cross_ref_order(
+            rule, stni, paragraphs,
+        ),
+        "document_structure": lambda self, rule, indices, paragraphs, labels, stni: self._op_document_structure(
+            rule, stni,
+        ),
     }
 
     def _execute_rule(
@@ -479,6 +494,11 @@ class RuleEngine:
         handler = self._OP_TABLE.get(op)
         if handler is None:
             return
+        # cross_ref_order / document_structure 是文档级 op，需要 segment_to_indices
+        # 故 lambda 多接收一个 stni 参数
+        if op in ("cross_ref_order", "document_structure"):
+            handler(self, rule, indices, paragraphs, labels, segment_to_indices)
+            return
         handler(self, rule, indices, paragraphs, labels)
 
     # -- op implementations --
@@ -496,6 +516,20 @@ class RuleEngine:
                 continue
             actual = para.get(field)
             if actual is None or actual == "":
+                # first_line_chars 回退：用 first_line_indent (cm) 推算字符数。
+                # 五号(10.5pt) 字号下 1 字符 ≈ 0.37cm；若规则要求 0 字符而
+                # 段也无任何首行缩进，则视为通过（标题段不缩进的常见情况）。
+                if field == "first_line_chars":
+                    fallback = self._first_line_chars_fallback(para, value)
+                    if fallback is not None:
+                        if fallback == value:
+                            continue
+                        self._add_error(
+                            seg_id, para, idx, msg or
+                            f"{field} should be {value}, got (inferred) {fallback}",
+                            action=action, action_value=action_value,
+                        )
+                        continue
                 self._add_missing(seg_id, para, idx, field)
                 continue
             if field == "line_spacing" and isinstance(actual, (int, float)) and actual > 5:
@@ -518,6 +552,45 @@ class RuleEngine:
                 self._add_error(seg_id, para, idx, msg or
                                 f"{field} should be {value}, got {actual}",
                                 action=action, action_value=action_value)
+
+    @staticmethod
+    def _first_line_chars_fallback(para: dict, expected: Any) -> Optional[int]:
+        """Infer first_line_chars from first_line_indent (cm) when the
+        ``w:firstLineChars`` attribute is absent.
+
+        Returns:
+            0 if the paragraph has no measurable first-line indent (covers
+            the common case of标题段 not being indented).
+            200 if the paragraph clearly has a ~2-character indent (0.6cm
+            or more at 五号字).
+            None if no inference can be made (caller should report missing).
+
+        Note:
+            Word 用 ``w:firstLineChars`` 存储字符单位缩进，但有些文档只设
+            ``w:firstLine`` 磅值。这里按段字号近似换算回字符单位，并允许
+            ±80 单位（约 0.8 字符）的容差——避免因字号定义、字符宽度
+            计算差异（Word 默认 1 字符宽 = 字号磅值，但实际可能受字体影响）
+            导致的浮点误差误报。
+        """
+        indent_cm = para.get("first_line_indent")
+        if indent_cm is None:
+            # 也没有磅值缩进属性 → 视为 0 字符（适用于标题段）
+            return 0 if expected == 0 else None
+        if not isinstance(indent_cm, (int, float)):
+            return None
+        if indent_cm < 0.01:
+            return 0
+        # 按段字号近似推算：1 字符宽 ≈ 字号 pt × 0.0353 cm/pt
+        size = para.get("size") or 10.5
+        char_cm = size * 0.0353
+        if char_cm <= 0:
+            return None
+        chars = round(indent_cm / char_cm * 100)  # 转回 1/100 字符单位
+        # 如果推算值与期望值差距在容差内（±80 单位 ≈ 0.8 字符），
+        # 直接采用期望值，避免浮点/字体宽度差异误报。
+        if isinstance(expected, (int, float)) and abs(chars - expected) <= 80:
+            return int(expected)
+        return chars
 
     def _op_in(
         self, seg_id: str, indices: list, paragraphs: list,
@@ -634,6 +707,382 @@ class RuleEngine:
                 "segment": seg_id,
             })
 
+    # ---- 新增 op 实现 ----
+
+    def _op_sequence_consecutive(
+        self, rule: dict, indices: list, paragraphs: list, labels: list,
+    ) -> None:
+        """检查段内编号是否从 start 开始连续递增；可选父段嵌套校验。
+
+        rule 字段：
+          - pattern: 必填，正则表达式，取第一个捕获组作为编号
+          - start:   起始值，默认 1
+          - unique:  是否要求编号唯一，默认 True
+          - parent_segment: 可选，父段 segment_id（用于嵌套编号如 1.1/1.2
+            或图表按章编序 图N.M）。指定后按父段分组，每组内独立连续。
+          - parent_pattern: 可选，父段编号提取正则（默认与 pattern 相同）。
+            用于父段编号格式与子段不同的情况。
+          - msg:     错误描述（覆盖默认提示）
+
+        当 parent_segment 指定时：
+        - 对每个子段，找到"最近的父段"（父段索引 < 当前段索引的最大者），
+          取其编号作为分组键。
+        - 同一分组键下的子段编号必须从 start 开始连续递增。
+        - 不同分组键之间独立计数（如第1章的图1-1和第3章的图3-1不冲突）。
+        """
+        seg_id = rule.get("segment")
+        pattern = rule.get("pattern")
+        start = rule.get("start", 1)
+        unique = rule.get("unique", True)
+        parent_segment = rule.get("parent_segment")
+        parent_pattern = rule.get("parent_pattern", pattern)
+        msg = rule.get("msg", "")
+
+        if not pattern:
+            return
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            self.errors.append({
+                "type": "rule_error",
+                "description": f"Invalid regex {pattern}: {exc}",
+                "location": f"sequence_consecutive {seg_id}",
+                "paragraph_index": None,
+                "segment": seg_id,
+            })
+            return
+
+        # 提取当前 segment 的 (段索引, 编号) 列表
+        numbered: list[tuple[int, int]] = []
+        for idx in indices:
+            text = paragraphs[idx].get("text", "") or ""
+            m = regex.search(text)
+            if not m:
+                continue
+            try:
+                num = int(m.group(1))
+            except (ValueError, IndexError):
+                continue
+            numbered.append((idx, num))
+
+        if not numbered:
+            return
+
+        # ---- 有父段：按父段分组，每组内独立检查连续性 ----
+        if parent_segment:
+            try:
+                parent_regex = re.compile(parent_pattern)
+            except re.error:
+                parent_regex = regex
+
+            # 收集父段 (段索引, 父编号) 列表
+            parent_indices_list = [
+                i for i, lab in enumerate(labels) if lab == parent_segment
+            ]
+            parent_numbers: list[tuple[int, int]] = []
+            for pidx in parent_indices_list:
+                ptext = paragraphs[pidx].get("text", "") or ""
+                pm = parent_regex.search(ptext)
+                if not pm:
+                    continue
+                try:
+                    pnum = int(pm.group(1))
+                except (ValueError, IndexError):
+                    continue
+                parent_numbers.append((pidx, pnum))
+
+            # 为每个子段找最近的父段（用父段索引作为分组键，避免不同章节
+            # 父段编号相同时误合并——例如 h2 "1.1" / "2.1" / "3.1" 都提取
+            # 出编号 1，若按编号分组合把所有章节的 h3 混在一起检查）
+            def _recent_parent_idx(idx: int) -> Optional[int]:
+                recent: Optional[int] = None
+                for pidx, _pnum in parent_numbers:
+                    if pidx < idx:
+                        recent = pidx
+                    else:
+                        break
+                return recent
+
+            # 按父段索引分组：每个父段独立计数
+            groups: dict[int, list[tuple[int, int]]] = {}
+            for idx, num in numbered:
+                key = _recent_parent_idx(idx)
+                if key is None:
+                    # 无父段覆盖（如封面图、摘要图），归入 -1 组不检查
+                    key = -1
+                groups.setdefault(key, []).append((idx, num))
+
+            # 每组内独立检查连续性 + 唯一性
+            for key, items in groups.items():
+                if key == -1:
+                    continue  # 无父段覆盖的段跳过
+                self._check_seq_in_group(
+                    items, seg_id, start, unique, msg, paragraphs,
+                )
+            return
+
+        # ---- 无父段：全局检查连续性 + 唯一性 ----
+        self._check_seq_in_group(
+            numbered, seg_id, start, unique, msg, paragraphs,
+        )
+
+    def _check_seq_in_group(
+        self,
+        items: list[tuple[int, int]],
+        seg_id: str,
+        start: int,
+        unique: bool,
+        msg: str,
+        paragraphs: list,
+    ) -> None:
+        """对一组 (段索引, 编号) 检查从 start 开始的连续性和唯一性。"""
+        seen: set[int] = set()
+        expected = start
+        for idx, num in items:
+            if unique and num in seen:
+                para = paragraphs[idx]
+                self._add_error(
+                    seg_id, para, idx,
+                    msg or f"编号 {num} 重复",
+                )
+                continue
+            seen.add(num)
+            if num != expected:
+                if num > expected:
+                    # 跳号：报告缺少的编号
+                    self.errors.append({
+                        "type": "sequence",
+                        "description": msg or f"缺少编号 {expected}",
+                        "location": seg_id,
+                        "paragraph_index": None,
+                        "segment": seg_id,
+                    })
+                # 重置预期值为当前编号 + 1，继续校验后续是否连续
+                expected = num + 1
+            else:
+                expected += 1
+
+    def _op_cross_ref_order(
+        self, rule: dict, segment_to_indices: dict, paragraphs: list,
+    ) -> None:
+        """检查图/表引用是否在对应 caption 之后出现（不允许前向引用）。
+
+        rule 字段：
+          - ref_segment:     扫描此 segment 的引用
+          - caption_segment: 对应 caption segment
+          - pattern:         引用 regex，需捕获 (kind, n1, n2) 三组
+          - msg:             错误描述
+        """
+        seg_id = rule.get("segment")
+        ref_segment = rule.get("ref_segment")
+        caption_segment = rule.get("caption_segment")
+        pattern = rule.get("pattern")
+        msg = rule.get("msg", "")
+
+        if not pattern or not ref_segment or not caption_segment:
+            return
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            self.errors.append({
+                "type": "rule_error",
+                "description": f"Invalid regex {pattern}: {exc}",
+                "location": "cross_ref_order",
+                "paragraph_index": None,
+                "segment": seg_id,
+            })
+            return
+
+        # 收集所有引用 (kind, n1, n2, ref_idx)
+        refs: list[tuple[str, str, str, int]] = []
+        for idx in segment_to_indices.get(ref_segment, []):
+            text = paragraphs[idx].get("text", "") or ""
+            for m in regex.finditer(text):
+                groups = m.groups()
+                if len(groups) < 3:
+                    continue
+                refs.append((groups[0], groups[1], groups[2], idx))
+
+        # 收集所有 caption (kind, n1, n2, caption_idx)
+        caption_map: dict[tuple[str, str, str], int] = {}
+        for idx in segment_to_indices.get(caption_segment, []):
+            text = paragraphs[idx].get("text", "") or ""
+            m = regex.search(text)
+            if not m:
+                continue
+            groups = m.groups()
+            if len(groups) < 3:
+                continue
+            caption_map[(groups[0], groups[1], groups[2])] = idx
+
+        for kind, n1, n2, ref_idx in refs:
+            cap_idx = caption_map.get((kind, n1, n2))
+            if cap_idx is None:
+                continue
+            if cap_idx < ref_idx:
+                self.errors.append({
+                    "type": "cross_ref",
+                    "description": msg or (
+                        f"{kind}{n1}.{n2} 出现在引述之前"
+                        f"（引用在段{ref_idx}，图在段{cap_idx}）"
+                    ),
+                    "location": f"段 {ref_idx} -> 段 {cap_idx}",
+                    "paragraph_index": paragraphs[ref_idx].get(
+                        "paragraph_index", ref_idx,
+                    ),
+                    "segment": ref_segment,
+                })
+
+    def _op_document_structure(
+        self, rule: dict, segment_to_indices: dict,
+    ) -> None:
+        """检查文档段结构是否齐全且顺序正确。
+
+        rule 字段：
+          - segments: 必填，期望的段 id 顺序列表
+          - msg:      错误描述
+        """
+        segments = rule.get("segments")
+        msg = rule.get("msg", "")
+
+        if not segments or not isinstance(segments, list):
+            return
+
+        # 1. 检查每个 segment 是否存在，记录其最小段索引
+        seg_min_idx: list[tuple[str, int]] = []
+        for seg in segments:
+            idxs = segment_to_indices.get(seg, [])
+            if not idxs:
+                self.errors.append({
+                    "type": "structure",
+                    "description": msg or f"缺少 {seg} 部分",
+                    "location": seg,
+                    "paragraph_index": None,
+                    "segment": seg,
+                })
+                continue
+            seg_min_idx.append((seg, min(idxs)))
+
+        # 2. 检查顺序（最小索引严格递增）
+        for i in range(1, len(seg_min_idx)):
+            prev_seg, prev_idx = seg_min_idx[i - 1]
+            cur_seg, cur_idx = seg_min_idx[i]
+            if cur_idx <= prev_idx:
+                self.errors.append({
+                    "type": "structure",
+                    "description": msg or f"{cur_seg} 应在 {prev_seg} 之前",
+                    "location": f"{prev_seg} -> {cur_seg}",
+                    "paragraph_index": None,
+                    "segment": cur_seg,
+                })
+
+    def _op_page_margins(self, rule: dict) -> None:
+        """检查页边距是否符合规范。
+
+        rule 字段：
+          - value:   dict {left, top, bottom, right}，期望值（单位 cm）
+          - tol:     容差，默认 0.1
+          - section: 节索引，默认 0
+          - msg:     错误描述
+        """
+        value = rule.get("value") or {}
+        tol = rule.get("tol", 0.1)
+        section = rule.get("section", 0)
+        msg = rule.get("msg", "")
+        seg_id = rule.get("segment")
+
+        sections = self.doc_data.get("sections") or []
+        if not sections or section >= len(sections) or section < -len(sections):
+            self.errors.append({
+                "type": "rule_error",
+                "description": f"section {section} 超出范围",
+                "location": "page_margins",
+                "paragraph_index": None,
+                "segment": seg_id,
+            })
+            return
+        section_data = sections[section]
+        margins = section_data.get("margins") or {}
+
+        for side in ("left", "top", "bottom", "right"):
+            expected = value.get(side)
+            if expected is None:
+                continue
+            actual = margins.get(side)
+            if actual is None:
+                self.errors.append({
+                    "type": "missing",
+                    "description": f"页边距 {side} 无法读取",
+                    "location": f"section {section} {side}",
+                    "paragraph_index": None,
+                    "segment": seg_id,
+                })
+                continue
+            if abs(actual - expected) > tol:
+                self.errors.append({
+                    "type": "format",
+                    "description": msg or (
+                        f"页边距 {side} 应为 {expected}"
+                        f"（容差±{tol}），实际 {actual}"
+                    ),
+                    "location": f"section {section} {side}",
+                    "paragraph_index": None,
+                    "segment": seg_id,
+                })
+
+    def _op_page_size(self, rule: dict) -> None:
+        """检查纸张尺寸是否符合规范。
+
+        rule 字段：
+          - value:   dict {width, height}，期望值（单位 cm）
+          - tol:     容差，默认 0.1
+          - section: 节索引，默认 0
+          - msg:     错误描述
+        """
+        value = rule.get("value") or {}
+        tol = rule.get("tol", 0.1)
+        section = rule.get("section", 0)
+        msg = rule.get("msg", "")
+        seg_id = rule.get("segment")
+
+        sections = self.doc_data.get("sections") or []
+        if not sections or section >= len(sections) or section < -len(sections):
+            self.errors.append({
+                "type": "rule_error",
+                "description": f"section {section} 超出范围",
+                "location": "page_size",
+                "paragraph_index": None,
+                "segment": seg_id,
+            })
+            return
+        section_data = sections[section]
+
+        for dim, key in (("width", "page_width"), ("height", "page_height")):
+            expected = value.get(dim)
+            if expected is None:
+                continue
+            actual = section_data.get(key)
+            if actual is None:
+                self.errors.append({
+                    "type": "missing",
+                    "description": f"纸张 {dim} 无法读取",
+                    "location": f"section {section} {dim}",
+                    "paragraph_index": None,
+                    "segment": seg_id,
+                })
+                continue
+            if abs(actual - expected) > tol:
+                self.errors.append({
+                    "type": "format",
+                    "description": msg or (
+                        f"纸张 {dim} 应为 {expected}"
+                        f"（容差±{tol}），实际 {actual}"
+                    ),
+                    "location": f"section {section} {dim}",
+                    "paragraph_index": None,
+                    "segment": seg_id,
+                })
+
     def _add_error(
         self, seg_id: str, para: dict, para_idx: int, msg: str,
         err_type: str = "format",
@@ -675,7 +1124,36 @@ class RuleEngine:
         Duplicate missing reports for the same (paragraph_index, field) are
         deduplicated to avoid flooding the report when multiple rules check
         the same field on the same paragraph.
+
+        Special-case suppression (returns without recording):
+          - ``first_line_chars``: when the paragraph has a non-zero
+            ``first_line_indent`` (cm), the document set the indent via the
+            ``w:firstLine``磅值 attribute instead of ``w:firstLineChars``
+            字符单位. The indent IS present, just expressed differently --
+            suppress the warning to avoid noise.
+          - ``font_en_most``: when the paragraph text contains no Latin
+            letters, there is no English run to extract a font from --
+            suppress the warning.
+          - ``font_cn_most``: when the paragraph text contains no CJK
+            characters, there is no Chinese run to extract a font from --
+            suppress the warning.
         """
+        # ---- 字段级抑制：用替代字段/文本特征判定"实际无问题" ----
+        if field == "first_line_chars":
+            indent_cm = para.get("first_line_indent")
+            if isinstance(indent_cm, (int, float)) and indent_cm > 0.01:
+                return
+        elif field == "font_en_most":
+            text = para.get("text") or ""
+            if not re.search(r"[A-Za-z]", text):
+                # 段落无任何拉丁字母 → 没有英文 run，font_en_most 必然为 None
+                return
+        elif field == "font_cn_most":
+            text = para.get("text") or ""
+            if not re.search(r"[\u4e00-\u9fff]", text):
+                # 段落无任何 CJK 字符 → 没有中文 run，font_cn_most 必然为 None
+                return
+
         pidx = para.get("paragraph_index", para_idx)
         dedup_key = (str(pidx), field)
         if dedup_key in self._missing_seen:

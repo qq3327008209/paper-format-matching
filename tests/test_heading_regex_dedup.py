@@ -1,16 +1,18 @@
 """Import-consistency test: heading/title/attachment regexes must be defined
 ONCE (in format.ops.heading) and re-imported everywhere else.
 
-This guards against the regression where a developer copies a regex definition
-into format.engine (or any other module), creating a second source of truth
-that silently diverges.
+Originally this test guarded ``format.engine`` from re-defining the regexes
+locally. After the engine split (round-1 refactor) ``format.engine`` no longer
+imports heading regexes at all — it is a thin facade with no ``format``-
+internal constants of its own. This file is therefore kept as a smoke test
+verifying that :mod:`format.ops.heading` is the single source of truth for
+heading regexes.
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import format.engine
 import format.ops.heading
 
 
@@ -25,20 +27,6 @@ HEADING_REGEX_NAMES = [
     "RE_ATTACHMENT",
     "RE_H2_INLINE_TITLE",
 ]
-
-
-def test_heading_regexes_are_imported_not_redefined():
-    """Every heading regex in format.engine must BE the same object as the
-    one in format.ops.heading (identity, not just equality)."""
-    for name in HEADING_REGEX_NAMES:
-        engine_val = getattr(format.engine, name, None)
-        heading_val = getattr(format.ops.heading, name, None)
-        assert engine_val is not None, f"{name} missing from format.engine"
-        assert heading_val is not None, f"{name} missing from format.ops.heading"
-        assert engine_val is heading_val, (
-            f"{name} is redefined in format.engine rather than imported from "
-            f"format.ops.heading -- this creates a second source of truth"
-        )
 
 
 def test_heading_module_exports_all_regexes():

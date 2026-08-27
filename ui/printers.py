@@ -1,16 +1,11 @@
-"""UI 层：基于 prompt_toolkit + rich 封装 REPL 输入与彩色输出。
+"""Rich 彩色输出：banner / kv table / 校验 / 批量进度 / 自检。
 
-设计原则：
-- 输入侧（prompt_toolkit）：输 / 弹命令菜单、Tab 补全、方向键历史、底部状态栏
-- 输出侧（rich）：表格、彩色、进度条、错误高亮
-- 命令补全元数据集中定义在 COMMAND_META，cli.py 和 ui.py 共用
+命令补全元数据 ``COMMAND_META`` 也在这里集中定义，供 ui/input.py 共用。
 """
+from __future__ import annotations
 
 import os
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import WordCompleter
-from prompt_toolkit.history import InMemoryHistory
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -43,11 +38,12 @@ COMMAND_META = {
 }
 
 
-# ------------------------------------------------------------------
-# 输出侧：rich Console 封装
-# ------------------------------------------------------------------
 console = Console()
 
+
+# ------------------------------------------------------------------
+# 基本消息
+# ------------------------------------------------------------------
 
 def print_banner():
     """打印启动 banner。"""
@@ -87,6 +83,10 @@ def print_error(exc):
     """异常输出。"""
     console.print(f"[bold red]错误:[/bold red] {exc}")
 
+
+# ------------------------------------------------------------------
+# 表格 / 列表
+# ------------------------------------------------------------------
 
 def print_kv_table(title, rows, headers=("项", "值")):
     """打印键值对表格。rows 是 list[tuple[str, str]]。"""
@@ -170,60 +170,26 @@ def print_test_step(name, ok, detail=""):
         console.print(f"  [red]✗[/red] {name}" + (f"  [dim]— {detail}[/dim]" if detail else ""))
 
 
-def print_test_summary(passed, total, tmp_dir):
-    """自检汇总。"""
+def print_test_summary(passed, total, ex_dir):
+    """自检汇总。
+
+    ``ex_dir`` 是 /test 产物落地的 examples/ 目录——保留展示路径便于用户
+    直接打开产物查看。流程跑通 + 路径可见，是 /test 的核心价值。
+    """
     if passed == total:
         console.print(Panel.fit(
-            f"[bold green]全部通过[/bold green]  {passed}/{total}\n临时目录: [dim]{tmp_dir}[/dim]",
+            f"[bold green]全部通过[/bold green]  {passed}/{total}\n"
+            f"产物目录: [dim]{ex_dir}[/dim]",
             border_style="green",
             title="自检完成",
         ))
     else:
         console.print(Panel.fit(
-            f"[bold yellow]{passed}/{total}[/bold yellow] 项通过\n临时目录: [dim]{tmp_dir}[/dim]",
+            f"[bold yellow]{passed}/{total}[/bold yellow] 项通过\n"
+            f"产物目录: [dim]{ex_dir}[/dim]",
             border_style="yellow",
             title="自检完成",
         ))
-
-
-# ------------------------------------------------------------------
-# 输入侧：prompt_toolkit 封装
-# ------------------------------------------------------------------
-
-
-def make_session():
-    """创建带命令补全和历史的 PromptSession。
-
-    特性：
-    - 输入 / 开头时弹出命令菜单（WordCompleter 的 meta_dict 提供描述）
-    - 上下方向键浏览历史
-    - Ctrl+C / Ctrl+D 退出
-    """
-    commands = sorted(COMMAND_META.keys())
-    completer = WordCompleter(
-        words=commands,
-        meta_dict={k: v[0] for k, v in COMMAND_META.items()},
-        sentence=True,
-    )
-    history = InMemoryHistory()
-    return PromptSession(
-        completer=completer,
-        history=history,
-        complete_while_typing=True,
-        prompt_continuation="  ",
-    )
-
-
-def read_input(session, prompt_text="> "):
-    """读一行输入。返回 (line, quit_flag)。
-
-    quit_flag 为 True 时表示用户按了 Ctrl+C/D 或 EOF。
-    """
-    try:
-        line = session.prompt(prompt_text).strip()
-        return line, False
-    except (EOFError, KeyboardInterrupt):
-        return "", True
 
 
 def print_farewell():

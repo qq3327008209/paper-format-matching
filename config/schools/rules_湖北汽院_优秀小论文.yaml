@@ -1,0 +1,727 @@
+# 湖北汽车工业学院 优秀毕业设计（小论文）撰写格式规范
+# 规则文件版本：contract-v2
+# 依据：附件12《优秀毕业设计（小论文）撰写格式规范》
+# 适用范围：优秀小论文（浓缩版），非完整毕业设计大论文
+#
+# 重要差异（与完整大论文 rules_lunwen.yaml 区别）：
+# - 标题编号格式是"1 xxx"而非"第X章 xxx"
+# - 正文字号是五号(10.5pt)而非小四(12pt)
+# - 行距是单倍而非固定28磅
+# - 参考文献首行不缩进（非悬挂缩进）
+# - 页边距：左3cm 上下右各2cm（非左右2.8/2.6）
+
+schema: contract-v2
+domain: "湖北汽车工业学院优秀小论文"
+version: "1.0"
+
+# ============================================================================
+# 段落分类：按声明顺序匹配，第一个匹配的 segment 生效
+# ============================================================================
+segments:
+  # ---- 封面部分 ----
+  - id: cover_title
+    match: "index < 5 and size >= 18"
+    desc: "封面论文大标题（毕业设计（论文））"
+
+  - id: cover_paper_title
+    match: "index < 50 and size >= 11 and size <= 14 and align == 'center' and regex('\\S') and not regex('[：:]')"
+    desc: "封面论文题目（如：校园失物招领平台）"
+
+  - id: student_info
+    match: "index < 10 and size >= 13 and size <= 15 and align == 'center'"
+    desc: "学生姓名/指导教师行（宋体四号居中）"
+
+  # 封面字段行（"题    目 ：xxx" / "学    院 ：xxx" 等）—— 右对齐或两端对齐 + 12pt + 含中文冒号或下划线
+  - id: cover_field
+    match: "index < 50 and align in ['right', 'justify'] and regex('[：:]') and not regex('^\\d')"
+    desc: "封面字段行（题目/学院/专业/班级/姓名/学号/指导教师/日期）"
+
+  # 封面其他段（空段、纯下划线段）
+  - id: cover_other
+    match: "index < 50 and (text.strip() == '' or regex('^[_\\s]+$'))"
+    desc: "封面其他段（空行/下划线）"
+
+  # ---- 中文摘要部分 ----
+  - id: abstract_cn_title
+    match: "regex('^摘\\s*要\\s*$') or regex('^摘\\s*要[：:]?\\s+\\S')"
+    desc: "中文摘要标题（黑体四号加粗居左）"
+
+  - id: keyword_cn
+    match: "regex('^关键词[：:]?')"
+    desc: "中文关键词段"
+
+  - id: abstract_cn_body
+    match: "after_h1('摘要') until next h1"
+    desc: "中文摘要正文（宋体五号）"
+
+  # ---- 英文摘要部分 ----
+  - id: abstract_en_title
+    match: "regex('^Abstract\\s*$') or regex('^Abstract[：:]?\\s+\\S')"
+    desc: "英文摘要标题（TNR四号加粗居左）"
+
+  - id: keyword_en
+    match: "regex('^Keywords?[：:]?') or regex('^Key\\s*Words?[：:]?')"
+    desc: "英文关键词段"
+
+  - id: abstract_en_body
+    match: "after_h1('Abstract') until next h1"
+    desc: "英文摘要正文（TNR五号）"
+
+  # ---- 目录 ----
+  - id: toc_title
+    match: "regex('^目\\s*录\\s*$')"
+    desc: "目录标题"
+
+  # ---- 正文标题级（按编号格式区分）----
+  - id: h1
+    match: "(regex('^\\d+\\s+\\S') or regex('^第[一二三四五六七八九十]+章\\s+\\S')) and size >= 13"
+    desc: "一级标题（1 xxx 或 第一章 xxx，黑体四号加粗）"
+
+  - id: h2
+    match: "regex('^\\d+\\.\\d+\\s+\\S') and size >= 11"
+    desc: "二级标题（1.1 xxx，黑体小四加粗）"
+
+  - id: h3
+    match: "regex('^\\d+\\.\\d+\\.\\d+\\s+\\S') and size >= 10"
+    desc: "三级标题（1.1.1 xxx，黑体五号加粗）"
+
+  - id: h4
+    match: "regex('^\\d+\\.\\d+\\.\\d+\\.\\d+\\s+\\S') and size >= 10"
+    desc: "四级标题（1.1.1.1 xxx，黑体五号加粗）"
+
+  # ---- 公式段（居中 + 行末圆括号编号）----
+  - id: formula
+    match: "align == 'center' and regex('\\(\\d+\\.\\d+\\)\\s*$')"
+    desc: "公式段（居中，行末(章.序)编号）"
+
+  # ---- 图表题注 ----
+  - id: table_caption
+    match: "regex('^表\\s*\\d+[\\.\\-]\\d+')"
+    desc: "表题（表N.M，黑体五号加粗居中）"
+
+  - id: figure_caption
+    match: "regex('^图\\s*\\d+[\\.\\-]\\d+')"
+    desc: "图题（图N.M，黑体五号加粗居中）"
+
+  # ---- 参考文献部分 ----
+  - id: reference_title
+    match: "regex('^参考文献\\s*$') or regex('^References\\s*$')"
+    desc: "参考文献标题（黑体四号加粗居左）"
+
+  # 参考文献条目：[N] 开头，或直接是作者名开头（无编号但已过参考文献标题）
+  - id: reference_item
+    match: "after_h1('参考文献') until end and (regex('^\\[\\d+\\]') or regex('^\\D'))"
+    desc: "参考文献条目（[N] xxx 或作者名开头，宋体五号）"
+
+  # 致谢段（参考文献之后的"致谢"标题及内容）
+  - id: acknowledgment_title
+    match: "regex('^致\\s*谢\\s*$')"
+    desc: "致谢标题"
+
+  - id: acknowledgment_body
+    match: "after_h1('致谢') until end"
+    desc: "致谢正文"
+
+  # ---- 兜底 ----
+  - id: body
+    match: "else and not in_table"
+    desc: "正文（宋体五号，首行缩进2字，单倍行距）"
+
+# ============================================================================
+# 格式检查规则
+# ============================================================================
+rules:
+  # =========================================================================
+  # 一、文档级检查（页边距、纸张、结构顺序）
+  # =========================================================================
+  - op: page_size
+    value: {width: 21.0, height: 29.7}
+    tol: 0.1
+    msg: "纸张尺寸应为 A4 (21×29.7cm)"
+
+  - op: page_margins
+    value: {left: 3.0, top: 2.0, bottom: 2.0, right: 2.0}
+    tol: 0.1
+    msg: "页边距应为：左3cm，上/下/右各2cm"
+
+  - op: document_structure
+    segments: [cover_title, abstract_cn_title, keyword_cn, abstract_en_title, keyword_en, h1, reference_title, reference_item]
+    msg: "文档结构顺序错误（应为：标题→中文摘要→关键词→英文摘要→Keywords→正文→参考文献）"
+
+  # =========================================================================
+  # 二、封面部分
+  # =========================================================================
+  - segment: cover_title
+    field: font
+    op: eq
+    value: "黑体"
+    msg: "论文标题字体应为黑体"
+    file_types: [docx, doc]
+
+  - segment: cover_title
+    field: size
+    op: eq
+    value: 22
+    tol: 0.5
+    msg: "论文标题字号应为二号(22pt)"
+    file_types: [docx, doc]
+
+  - segment: cover_title
+    field: align
+    op: eq
+    value: "center"
+    msg: "论文标题应居中"
+
+  - segment: student_info
+    field: font
+    op: eq
+    value: "宋体"
+    msg: "学生姓名/指导教师行字体应为宋体"
+    file_types: [docx, doc]
+
+  - segment: student_info
+    field: size
+    op: eq
+    value: 14
+    tol: 0.5
+    msg: "学生姓名/指导教师行字号应为四号(14pt)"
+    file_types: [docx, doc]
+
+  # =========================================================================
+  # 三、中文摘要
+  # =========================================================================
+  - segment: abstract_cn_title
+    field: font
+    op: eq
+    value: "黑体"
+    msg: "中文摘要标题字体应为黑体"
+    file_types: [docx, doc]
+
+  - segment: abstract_cn_title
+    field: size
+    op: eq
+    value: 14
+    tol: 0.5
+    msg: "中文摘要标题字号应为四号(14pt)"
+    file_types: [docx, doc]
+
+  - segment: abstract_cn_title
+    field: bold
+    op: eq
+    value: true
+    msg: "中文摘要标题应加粗"
+
+  - segment: abstract_cn_title
+    field: first_line_chars
+    op: eq
+    value: 0
+    msg: "中文摘要标题应不缩进"
+
+  - segment: abstract_cn_body
+    field: font_cn_most
+    op: eq
+    value: "宋体"
+    msg: "中文摘要正文中文字体应为宋体"
+    file_types: [docx, doc]
+
+  - segment: abstract_cn_body
+    field: size
+    op: eq
+    value: 10.5
+    tol: 0.3
+    msg: "中文摘要正文字号应为五号(10.5pt)"
+    file_types: [docx, doc]
+
+  - segment: abstract_cn_body
+    field: line_spacing_rule
+    op: eq
+    value: "single"
+    msg: "中文摘要正文行距应为单倍"
+
+  # ---- 中文关键词 ----
+  - segment: keyword_cn
+    field: text
+    op: regex
+    value: "^关键词[：:].+[；;].+[；;].+"
+    msg: "中文关键词应以分号分隔，至少3个"
+    file_types: [docx, doc]
+
+  - segment: keyword_cn
+    op: count_min
+    value: 1
+    msg: "缺少中文关键词段"
+
+  - segment: keyword_cn
+    field: font
+    op: in
+    value: ["黑体", "宋体"]
+    msg: "中文关键词字体应为黑体（标题）或宋体（正文）"
+    file_types: [docx, doc]
+
+  # =========================================================================
+  # 四、英文摘要
+  # =========================================================================
+  - segment: abstract_en_title
+    field: font_en_most
+    op: eq
+    value: "Times New Roman"
+    msg: "英文摘要标题字体应为 Times New Roman"
+    file_types: [docx, doc]
+
+  - segment: abstract_en_title
+    field: size
+    op: eq
+    value: 14
+    tol: 0.5
+    msg: "英文摘要标题字号应为四号(14pt)"
+    file_types: [docx, doc]
+
+  - segment: abstract_en_title
+    field: bold
+    op: eq
+    value: true
+    msg: "英文摘要标题应加粗"
+
+  - segment: abstract_en_title
+    field: first_line_chars
+    op: eq
+    value: 0
+    msg: "英文摘要标题应不缩进"
+
+  - segment: abstract_en_body
+    field: font_en_most
+    op: eq
+    value: "Times New Roman"
+    msg: "英文摘要正文字体应为 Times New Roman（不允许楷体/宋体）"
+    file_types: [docx, doc]
+
+  - segment: abstract_en_body
+    field: size
+    op: eq
+    value: 10.5
+    tol: 0.3
+    msg: "英文摘要正文字号应为五号(10.5pt)"
+    file_types: [docx, doc]
+
+  # ---- 英文关键词 ----
+  - segment: keyword_en
+    field: text
+    op: regex
+    value: "^Keywords?[：:].+[,；;].+[,；;].+"
+    msg: "英文 Keywords 应以逗号或分号分隔，至少3个"
+    file_types: [docx, doc]
+
+  - segment: keyword_en
+    op: count_min
+    value: 1
+    msg: "缺少英文 Keywords 段"
+
+  # =========================================================================
+  # 五、正文标题级（编号格式 + 字体字号 + 前后空行）
+  # =========================================================================
+  # ---- 一级标题 ----
+  - segment: h1
+    field: font
+    op: eq
+    value: "黑体"
+    msg: "一级标题字体应为黑体"
+    file_types: [docx, doc]
+
+  - segment: h1
+    field: size
+    op: eq
+    value: 14
+    tol: 0.5
+    msg: "一级标题字号应为四号(14pt)"
+    file_types: [docx, doc]
+
+  - segment: h1
+    field: bold
+    op: eq
+    value: true
+    msg: "一级标题应加粗"
+
+  - segment: h1
+    field: first_line_chars
+    op: eq
+    value: 0
+    msg: "一级标题应不缩进"
+
+  - segment: h1
+    field: has_blank_before
+    op: eq
+    value: true
+    msg: "一级标题前应空一行"
+
+  - segment: h1
+    field: has_blank_after
+    op: eq
+    value: true
+    msg: "一级标题后应空一行"
+
+  # ---- 二级标题 ----
+  - segment: h2
+    field: font
+    op: eq
+    value: "黑体"
+    msg: "二级标题字体应为黑体"
+    file_types: [docx, doc]
+
+  - segment: h2
+    field: size
+    op: eq
+    value: 12
+    tol: 0.5
+    msg: "二级标题字号应为小四(12pt)"
+    file_types: [docx, doc]
+
+  - segment: h2
+    field: bold
+    op: eq
+    value: true
+    msg: "二级标题应加粗"
+
+  - segment: h2
+    field: first_line_chars
+    op: eq
+    value: 0
+    msg: "二级标题应不缩进"
+
+  - segment: h2
+    field: has_blank_before
+    op: eq
+    value: true
+    msg: "二级标题前应空一行"
+
+  - segment: h2
+    field: has_blank_after
+    op: eq
+    value: true
+    msg: "二级标题后应空一行"
+
+  # ---- 三级标题 ----
+  - segment: h3
+    field: font
+    op: eq
+    value: "黑体"
+    msg: "三级标题字体应为黑体"
+    file_types: [docx, doc]
+
+  - segment: h3
+    field: size
+    op: eq
+    value: 10.5
+    tol: 0.3
+    msg: "三级标题字号应为五号(10.5pt)"
+    file_types: [docx, doc]
+
+  - segment: h3
+    field: bold
+    op: eq
+    value: true
+    msg: "三级标题应加粗"
+
+  - segment: h3
+    field: first_line_chars
+    op: eq
+    value: 0
+    msg: "三级标题应不缩进"
+
+  # ---- 四级标题 ----
+  - segment: h4
+    field: font
+    op: eq
+    value: "黑体"
+    msg: "四级标题字体应为黑体"
+    file_types: [docx, doc]
+
+  - segment: h4
+    field: size
+    op: eq
+    value: 10.5
+    tol: 0.3
+    msg: "四级标题字号应为五号(10.5pt)"
+    file_types: [docx, doc]
+
+  - segment: h4
+    field: bold
+    op: eq
+    value: true
+    msg: "四级标题应加粗"
+
+  # ---- 标题层级不超过四级（h4 之后的五级编号报错）----
+  - segment: h4
+    op: count_max
+    value: 0
+    msg: "标题层级不应超过四级（出现五级编号 1.1.1.1.1 等）"
+
+  # ---- 编号连续性 ----
+  - segment: h1
+    op: sequence_consecutive
+    pattern: "^(\\d+)\\s"
+    start: 1
+    unique: true
+    msg: "一级标题编号不连续"
+
+  - segment: h2
+    op: sequence_consecutive
+    pattern: "^\\d+\\.(\\d+)\\s"
+    parent_pattern: "^(\\d+)\\s"
+    start: 1
+    unique: true
+    parent_segment: h1
+    msg: "二级标题编号不连续或父级不匹配"
+
+  - segment: h3
+    op: sequence_consecutive
+    pattern: "^\\d+\\.\\d+\\.(\\d+)\\s"
+    parent_pattern: "^\\d+\\.(\\d+)\\s"
+    start: 1
+    unique: true
+    parent_segment: h2
+    msg: "三级标题编号不连续或父级不匹配"
+
+  # =========================================================================
+  # 六、正文段落
+  # =========================================================================
+  - segment: body
+    field: font_cn_most
+    op: eq
+    value: "宋体"
+    msg: "正文中文字体应为宋体"
+    file_types: [docx, doc]
+
+  - segment: body
+    field: font_en_most
+    op: eq
+    value: "Times New Roman"
+    msg: "正文英文字体应为 Times New Roman"
+    file_types: [docx, doc]
+
+  - segment: body
+    field: size
+    op: eq
+    value: 10.5
+    tol: 0.3
+    msg: "正文字号应为五号(10.5pt)"
+    file_types: [docx, doc]
+
+  - segment: body
+    field: first_line_chars
+    op: eq
+    value: 200
+    msg: "正文首行缩进应为2字符"
+    file_types: [docx, doc]
+
+  - segment: body
+    field: line_spacing_rule
+    op: eq
+    value: "single"
+    msg: "正文行距应为单倍"
+
+  - segment: body
+    field: align
+    op: in
+    value: [justify, left]
+    msg: "正文对齐应为两端或左对齐"
+
+  # =========================================================================
+  # 七、公式
+  # =========================================================================
+  - segment: formula
+    field: align
+    op: eq
+    value: "center"
+    msg: "公式应居中"
+
+  - segment: formula
+    op: sequence_consecutive
+    pattern: "\\((\\d+)\\.(\\d+)\\)\\s*$"
+    start: 1
+    unique: true
+    parent_segment: h1
+    msg: "公式编号不连续（应按章编序 N.M）"
+
+  # =========================================================================
+  # 八、表格题注
+  # =========================================================================
+  - segment: table_caption
+    field: font
+    op: eq
+    value: "黑体"
+    msg: "表题字体应为黑体"
+    file_types: [docx, doc]
+
+  - segment: table_caption
+    field: size
+    op: eq
+    value: 10.5
+    tol: 0.3
+    msg: "表题字号应为五号(10.5pt)"
+    file_types: [docx, doc]
+
+  - segment: table_caption
+    field: bold
+    op: eq
+    value: true
+    msg: "表题应加粗"
+
+  - segment: table_caption
+    field: align
+    op: eq
+    value: "center"
+    msg: "表题应居中"
+
+  - segment: table_caption
+    op: sequence_consecutive
+    pattern: "^表\\s*\\d+[\\.\\-](\\d+)"
+    start: 1
+    unique: true
+    parent_segment: h1
+    msg: "表编号不连续（应按章编序 表N.M）"
+
+  # =========================================================================
+  # 九、插图题注
+  # =========================================================================
+  - segment: figure_caption
+    field: font
+    op: eq
+    value: "黑体"
+    msg: "图题字体应为黑体"
+    file_types: [docx, doc]
+
+  - segment: figure_caption
+    field: size
+    op: eq
+    value: 10.5
+    tol: 0.3
+    msg: "图题字号应为五号(10.5pt)"
+    file_types: [docx, doc]
+
+  - segment: figure_caption
+    field: bold
+    op: eq
+    value: true
+    msg: "图题应加粗"
+
+  - segment: figure_caption
+    field: align
+    op: eq
+    value: "center"
+    msg: "图题应居中"
+
+  - segment: figure_caption
+    op: sequence_consecutive
+    pattern: "^图\\s*\\d+[\\.\\-](\\d+)"
+    start: 1
+    unique: true
+    parent_segment: h1
+    msg: "图编号不连续（应按章编序 图N.M）"
+
+  # ---- 引述顺序：图/表不能出现在引述之前 ----
+  - op: cross_ref_order
+    ref_segment: body
+    caption_segment: figure_caption
+    pattern: "如\\s*图\\s*(\\d+)[\\.\\-](\\d+)"
+    msg: "图出现在引述之前（应先引述后插图）"
+
+  - op: cross_ref_order
+    ref_segment: body
+    caption_segment: table_caption
+    pattern: "(?:如|见|参见)\\s*表\\s*(\\d+)[\\.\\-](\\d+)"
+    msg: "表出现在引述之前（应先引述后插表）"
+
+  # =========================================================================
+  # 十、参考文献
+  # =========================================================================
+  - segment: reference_title
+    field: font
+    op: eq
+    value: "黑体"
+    msg: "参考文献标题字体应为黑体"
+    file_types: [docx, doc]
+
+  - segment: reference_title
+    field: size
+    op: eq
+    value: 14
+    tol: 0.5
+    msg: "参考文献标题字号应为四号(14pt)"
+    file_types: [docx, doc]
+
+  - segment: reference_title
+    field: bold
+    op: eq
+    value: true
+    msg: "参考文献标题应加粗"
+
+  - segment: reference_title
+    field: first_line_chars
+    op: eq
+    value: 0
+    msg: "参考文献标题应不缩进"
+
+  - segment: reference_item
+    field: font_cn_most
+    op: eq
+    value: "宋体"
+    msg: "参考文献条目中文字体应为宋体"
+    file_types: [docx, doc]
+
+  - segment: reference_item
+    field: size
+    op: eq
+    value: 10.5
+    tol: 0.3
+    msg: "参考文献条目字号应为五号(10.5pt)"
+    file_types: [docx, doc]
+
+  - segment: reference_item
+    field: first_line_chars
+    op: eq
+    value: 0
+    msg: "参考文献条目首行应不缩进（注意：不是悬挂缩进）"
+    file_types: [docx, doc]
+
+  - segment: reference_item
+    field: line_spacing_rule
+    op: eq
+    value: "single"
+    msg: "参考文献条目行距应为单倍"
+
+  - segment: reference_item
+    op: count_min
+    value: 5
+    msg: "参考文献条目不足5条"
+
+  # ---- 参考文献序号连续 ----
+  - segment: reference_item
+    op: sequence_consecutive
+    pattern: "^\\[(\\d+)\\]"
+    start: 1
+    unique: true
+    msg: "参考文献序号不连续（应从[1]开始连续编号）"
+
+  # ---- 文献类型代码校验 ----
+  - segment: reference_item
+    field: text
+    op: regex
+    value: "\\[(M|J|R|G|D|S|P|N|C|EB|DB|CP|MT|DK|CD|OL|Z)(/[A-Z]+)?\\]"
+    msg: "参考文献条目应包含合法的文献类型代码（如[M]/[J]/[D]/[C]/[EB/OL]等）"
+    file_types: [docx, doc]
+
+# ============================================================================
+# 跳过文件名关键字
+# ============================================================================
+skip_files:
+  - "查重报告"
+  - "成绩评定表"
+  - "答辩PPT"
+  - "答辩课件"
+  - "答辩报告"
+  - "英文原文"
+  - "任务书"
+  - "开题报告"
+  - "中期报告"
+  - "外文翻译"
+  - "工作日志"

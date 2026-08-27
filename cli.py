@@ -25,6 +25,86 @@ logger = logging.getLogger(__name__)
 # Supported document extensions for batch operations.
 SUPPORTED_EXTS = (".docx", ".doc", ".wps", ".pdf")
 
+# 用户日常工作的两个目录：input/ 放待处理文档，output/ 落处理产物。
+# 这两个目录在 CLI 启动时自动创建（不区分源码 / 打包环境，统一行为）。
+WORK_DIRS = ("input", "output")
+
+
+def _ensure_work_dirs():
+    """在 BASE_DIR 下确保 input/ 与 output/ 存在。
+
+    启动时调用一次即可。源码模式下 BASE_DIR 是项目根，打包后是 exe 同级，
+    两种环境都让用户看到一致的 input/ output/ 布局。
+    """
+    for name in WORK_DIRS:
+        os.makedirs(resolve(name), exist_ok=True)
+
+
+def _resolve_input_path(path: str | None) -> str | None:
+    """把用户传入的路径规整为绝对路径。
+
+    规则：
+      - 绝对路径（含盘符或 ``\\`` / ``/`` 开头）→ 原样返回，行为不变。
+      - None / 空 → None（保持"未指定"的语义）。
+      - 其他（裸文件名、相对路径）→ 若 BASE_DIR/input/ 下存在同名文件，
+        自动补全为该路径；否则原样返回，让下游报错。
+
+    这样 ``/check 报告.docx`` 就能直接读取 ``input/报告.docx``，
+    跟用户"把待处理文件丢 input/、产物落 output/"的工作流对齐。
+    """
+    if not path:
+        return path
+    if os.path.isabs(path):
+        return path
+    candidate = os.path.join(resolve("input"), path)
+    if os.path.exists(candidate):
+        return candidate
+    return path
+
+
+def _resolve_output_path(filename: str | None = None) -> str:
+    """生成 BASE_DIR/output/ 下的产物路径。
+
+    - ``filename`` 为 None：返回 ``output/`` 目录本身（用于批量子命令）。
+    - ``filename`` 给定：返回 ``output/<filename>``（不带前导斜杠）。
+    """
+    out_dir = resolve("output")
+    if filename is None:
+        return out_dir
+    return os.path.join(out_dir, filename)
+
+
+def _resolve_input_dir(dir_path: str) -> str:
+    """Resolve a batch command's directory argument.
+
+    - Empty / missing → ``BASE_DIR/input/`` (the default work directory).
+    - Absolute → as-is.
+    - Relative → joined under ``BASE_DIR/input/`` so users can write
+      ``/check-dir 周报/`` to operate on ``input/周报/``.
+    """
+    if not dir_path:
+        return resolve("input")
+    if os.path.isabs(dir_path):
+        return dir_path
+    return os.path.join(resolve("input"), dir_path)
+
+
+def _make_batch_config(flags: dict, fallback):
+    """Pick a Config for a batch command based on ``--preset``.
+
+    Falls back to ``fallback`` when the flag is absent; this keeps each
+    batch sub-command focused on its own work without re-implementing the
+    flag parsing.
+    """
+    name = flags.get("preset")
+    return Config(name) if name else fallback
+
+
+def _default_format_out_path(path: str) -> str:
+    """Default ``/format`` output path: ``output/<stem>_formatted.docx``."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return _resolve_output_path(f"{stem}_formatted.docx")
+
 
 class CLI:
     """Interactive command-line interface for document format tooling."""
@@ -35,6 +115,8 @@ class CLI:
         self.last_errors = []
         self.last_file = None
         self.session = None  # 延迟到 run() 创建，避免非交互环境报错
+        # 启动时确保 input/ output/ 工作目录存在
+        _ensure_work_dirs()
         self.commands = {
             "/help": self.cmd_help,
             "/config": self.cmd_config,
@@ -179,13 +261,20 @@ class CLI:
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
-    def _validate_file(self, file_path, rules_path):
-        """Validate one file. Returns (errors, domain, rules_data)."""
+    def _validate_file(self, file_path, rules_path, *, record_state: bool = True):
+        """Validate one file. Returns (errors, domain, rules_data).
+
+        ``record_state=False`` 时不写入 ``self.last_errors / last_file``，
+        给 /test 这类"分步走校验和修复"避免半路被覆盖。
+        """
         extractor = get_extractor(file_path)
         doc_data = extractor.extract(file_path)
         engine = RuleEngine(doc_data, rules_path=rules_path)
         errors = engine.validate()
         domain = engine.rules_data.get("domain", "")
+        if record_state:
+            self.last_errors = errors
+            self.last_file = file_path
         return errors, domain, engine.rules_data
 
     @staticmethod
@@ -241,22 +330,33 @@ class CLI:
         Returns (errors, domain, repaired_count, out_path).
         ``out_path`` is None when the file cannot be repaired in place.
         """
-        errors, domain, rules_data = self._validate_file(file_path, rules_path)
-        self.last_errors = errors
-        self.last_file = file_path
-
+        errors, domain, _rules_data = self._validate_file(file_path, rules_path)
         if not file_path.lower().endswith(".docx"):
             return errors, domain, 0, None
+
+        stem = os.path.splitext(os.path.basename(file_path))[0]
+        out_path = _resolve_output_path(f"{stem}_fixed.docx")
+        repaired = self._apply_repairs(file_path, out_path, errors, config=config)
+        return errors, domain, repaired, out_path
+
+    def _apply_repairs(self, file_path, out_path, errors, *, config=None):
+        """Apply errors' repair actions to ``file_path`` and save to ``out_path``.
+
+        Single source of truth for the per-paragraph repair loop.  Both the
+        ``/check-fix`` command and the ``/test`` self-check call into this;
+        /test supplies a pre-validated ``errors`` list (to keep
+        ``self.last_errors`` for the trailing ``/annotate`` step) and a
+        caller-supplied ``out_path`` so the artefact lands in ``examples/``
+        instead of the user-visible ``output/``.
+        """
+        if not file_path.lower().endswith(".docx"):
+            return 0
 
         from docx import Document
 
         doc = Document(file_path)
         paragraphs = doc.paragraphs
-
-        # 修复决策直接来自 validate() 返回的 error dict（action / action_value
-        # 字段由规则引擎在 _execute_rule 中写入）。不再重新遍历 rules 聚合
-        # seg_actions——那会让修复路径与校验路径脱节，且对 in/range 等 op 的
-        # value 语义不匹配。
+        cfg = config or self.config
         repaired = 0
         seen: set[tuple] = set()
         for err in errors:
@@ -272,14 +372,11 @@ class CLI:
             seen.add(key)
             if 0 <= idx < len(paragraphs):
                 self._apply_format_action(
-                    paragraphs[idx], action, value, seg, config
+                    paragraphs[idx], action, value, seg, cfg
                 )
                 repaired += 1
-
-        stem = os.path.splitext(file_path)[0]
-        out_path = f"{stem}_fixed.docx"
         doc.save(out_path)
-        return errors, domain, repaired, out_path
+        return repaired
 
     # ------------------------------------------------------------------
     # Commands
@@ -325,6 +422,7 @@ class CLI:
         if not path:
             ui.print_warn("用法: /check <文件路径> [--rules <规则文件>]")
             return
+        path = _resolve_input_path(path)
         rules_path = flags.get("rules", self.rules_path)
         ui.print_info("校验中...")
         errors, domain, _rules_data = self._validate_file(path, rules_path)
@@ -346,6 +444,7 @@ class CLI:
         if not dir_path:
             ui.print_warn("用法: /check-dir <目录> [--rules <规则文件>]")
             return
+        dir_path = _resolve_input_dir(dir_path)
         rules_path = flags.get("rules", self.rules_path)
         files = self._collect_files(dir_path)
         if not files:
@@ -380,15 +479,11 @@ class CLI:
         if not path:
             ui.print_warn("用法: /format <文件路径> [--preset <预设>] [--output <输出路径>]")
             return
-        preset_name = flags.get("preset")
-        config = Config(preset_name) if preset_name else self.config
-        out_path = flags.get("output")
-        if not out_path:
-            stem = os.path.splitext(path)[0]
-            out_path = f"{stem}_formatted.docx"
+        path = _resolve_input_path(path)
+        config = _make_batch_config(flags, self.config)
+        out_path = flags.get("output") or _default_format_out_path(path)
         ui.print_info(f"排版中... (预设: {config.preset_name})")
-        engine = FormatEngine(config)
-        engine.run(path, out_path)
+        FormatEngine(config).run(path, out_path)
         ui.print_good(f"排版完成: {out_path}")
 
     def cmd_format_dir(self, args):
@@ -397,23 +492,23 @@ class CLI:
         if not dir_path:
             ui.print_warn("用法: /format-dir <目录> [--preset <预设>]")
             return
-        preset_name = flags.get("preset")
-        config = Config(preset_name) if preset_name else self.config
+        dir_path = _resolve_input_dir(dir_path)
+        config = _make_batch_config(flags, self.config)
         files = self._collect_files(dir_path)
         if not files:
             ui.print_warn("未找到支持的文档文件。")
             return
         ui.print_info(f"共发现 {len(files)} 个文件，开始批量排版... (预设: {config.preset_name})")
+        out_dir = _resolve_output_path()
         for i, f in enumerate(files, 1):
             try:
-                stem = os.path.splitext(f)[0]
-                out_path = f"{stem}_formatted.docx"
-                engine = FormatEngine(config)
-                engine.run(f, out_path)
+                stem = os.path.splitext(os.path.basename(f))[0]
+                out_path = os.path.join(out_dir, f"{stem}_formatted.docx")
+                FormatEngine(config).run(f, out_path)
                 ui.print_batch_progress(i, len(files), os.path.basename(f), "ok", "done")
             except Exception as exc:
                 ui.print_batch_progress(i, len(files), os.path.basename(f), "fail", f"排版失败: {exc}")
-        ui.print_good("批量排版完成。")
+        ui.print_good(f"批量排版完成。产物在 {out_dir}")
 
     def cmd_check_fix(self, args):
         """校验并修复单个文件。"""
@@ -421,9 +516,9 @@ class CLI:
         if not path:
             ui.print_warn("用法: /check-fix <文件路径> [--rules <规则文件>] [--preset <预设>]")
             return
+        path = _resolve_input_path(path)
         rules_path = flags.get("rules", self.rules_path)
-        preset_name = flags.get("preset")
-        config = Config(preset_name) if preset_name else self.config
+        config = _make_batch_config(flags, self.config)
         ui.print_info("校验并修复中...")
         errors, domain, repaired, out_path = self._check_fix_core(
             path, rules_path, config
@@ -440,14 +535,15 @@ class CLI:
         if not dir_path:
             ui.print_warn("用法: /check-fix-dir <目录> [--rules <规则文件>] [--preset <预设>]")
             return
+        dir_path = _resolve_input_dir(dir_path)
         rules_path = flags.get("rules", self.rules_path)
-        preset_name = flags.get("preset")
-        config = Config(preset_name) if preset_name else self.config
+        config = _make_batch_config(flags, self.config)
         files = self._collect_files(dir_path)
         if not files:
             ui.print_warn("未找到支持的文档文件。")
             return
         ui.print_info(f"共发现 {len(files)} 个文件，开始批量校验修复...")
+        out_dir = _resolve_output_path()
         for i, f in enumerate(files, 1):
             try:
                 _errors, _domain, repaired, out_path = self._check_fix_core(
@@ -460,7 +556,7 @@ class CLI:
                     ui.print_batch_progress(i, len(files), os.path.basename(f), "skip", "非 .docx")
             except Exception as exc:
                 ui.print_batch_progress(i, len(files), os.path.basename(f), "fail", f"修复失败: {exc}")
-        ui.print_good("批量校验修复完成。")
+        ui.print_good(f"批量校验修复完成。产物在 {out_dir}")
 
     def cmd_annotate(self, args):
         """标注上次校验结果。"""
@@ -468,7 +564,7 @@ class CLI:
             ui.print_warn("没有可标注的校验结果，请先运行 /check。")
             return
         stem = os.path.splitext(os.path.basename(self.last_file))[0]
-        out_path = resolve("annotated", f"{stem}_annotated.docx")
+        out_path = _resolve_output_path(f"{stem}_annotated.docx")
         ensure_parent(out_path)
         ui.print_info("标注中...")
         ok = annotate_document(self.last_file, out_path, self.last_errors)
@@ -493,22 +589,24 @@ class CLI:
             ui.print_bad(message)
 
     def cmd_test(self, args):
-        """端到端自检：生成样例文档，跑 校验→格式化→修复→批注 全流程。"""
-        import tempfile
+        """端到端自检：跑 校验→格式化→修复→批注 全流程，产物落 examples/。
 
+        /test 是演示命令，流程与日常 /check → /format → /check-fix → /annotate
+        完全一致，只是工作目录换成 ``examples/``——这样用户能直接双击产物
+        看效果，不会污染 input/ output/ 日常工作目录。
+
+        examples/ 是 /test 的产物缓存区，不参与日常工作流。
+        """
         from docx import Document
 
         ui.print_info("端到端自检开始（不调用 LLM，不消耗 token）")
-        tmp_dir = tempfile.mkdtemp(prefix="pfm_test_")
-        results = []
+        ex_dir = resolve("examples")
+        os.makedirs(ex_dir, exist_ok=True)
 
-        def step(name, ok, detail=""):
-            results.append(ok)
-            ui.print_test_step(name, ok, detail)
-
-        # 1. 生成样例 .docx
-        sample_path = os.path.join(tmp_dir, "sample.docx")
-        try:
+        # 1. 准备样例文档：examples/ 下优先找预置种子，没有则现场生成一份。
+        sample_path = os.path.join(ex_dir, "sample_for_test.docx")
+        if not os.path.exists(sample_path):
+            ui.print_warn(f"未找到预置样本 {sample_path}，将生成最小占位文档。")
             doc = Document()
             doc.add_paragraph("测试标题", style="Title")
             doc.add_paragraph("第一章 引言", style="Heading 1")
@@ -516,11 +614,16 @@ class CLI:
             doc.add_paragraph("第二章 方法", style="Heading 1")
             doc.add_paragraph("正文内容继续。")
             doc.save(sample_path)
-            step("生成样例文档", True, sample_path)
-        except Exception as exc:
-            step("生成样例文档", False, str(exc))
-            ui.print_bad("样例文档生成失败，终止自检。")
-            return
+
+        formatted_path = os.path.join(ex_dir, "sample_formatted.docx")
+        fixed_path = os.path.join(ex_dir, "sample_fixed.docx")
+        anno_path = os.path.join(ex_dir, "sample_annotated.docx")
+
+        results = []
+
+        def step(name, ok, detail=""):
+            results.append(ok)
+            ui.print_test_step(name, ok, detail)
 
         # 2. 校验 /check
         rules_path = self.rules_path
@@ -536,8 +639,7 @@ class CLI:
         except Exception as exc:
             step("校验 /check", False, str(exc))
 
-        # 3. 格式化 /format
-        formatted_path = os.path.join(tmp_dir, "sample_formatted.docx")
+        # 3. 格式化 /format（产物直接落 examples/，不走默认的 output/）
         try:
             engine = FormatEngine(self.config)
             engine.run(sample_path, formatted_path)
@@ -546,21 +648,22 @@ class CLI:
         except Exception as exc:
             step("格式化 /format", False, str(exc))
 
-        # 4. 校验并修复 /check-fix
+        # 4. 校验并修复 /check-fix（产物直接落 examples/）
+        #    先校验一次把 last_errors 留给 step5 的批注用，然后让 _run_check_fix_to
+        #    复用刚才校验的 results 走修复分支，不再触发第二次 validate（否则
+        #    会覆盖 last_file / last_errors）。
         try:
-            _errors, _domain, repaired, out_path = self._check_fix_core(
-                sample_path, rules_path, self.config
-            )
-            ok_fix = out_path is not None and os.path.exists(out_path)
+            errors, _domain, _rd = self._validate_file(sample_path, rules_path)
+            repaired = self._apply_repairs(sample_path, fixed_path, errors)
+            ok_fix = os.path.exists(fixed_path)
             step("校验修复 /check-fix", ok_fix,
                  f"修复 {repaired} 处" if ok_fix else "未生成产物")
         except Exception as exc:
             step("校验修复 /check-fix", False, str(exc))
 
-        # 5. 批注 /annotate（基于上次校验结果）
+        # 5. 批注 /annotate（基于 step2 的校验结果，产物落 examples/）
         try:
             if self.last_errors and self.last_file:
-                anno_path = os.path.join(tmp_dir, "sample_annotated.docx")
                 ok_anno = annotate_document(self.last_file, anno_path, self.last_errors)
                 step("批注 /annotate", ok_anno, anno_path if ok_anno else "仅支持 .docx")
             else:
@@ -568,7 +671,7 @@ class CLI:
         except Exception as exc:
             step("批注 /annotate", False, str(exc))
 
-        ui.print_test_summary(sum(results), len(results), tmp_dir)
+        ui.print_test_summary(sum(results), len(results), ex_dir)
 
     def cmd_chat(self, args):
         """进入与 LLM 的多轮对话子界面。输入 exit 退出。"""
