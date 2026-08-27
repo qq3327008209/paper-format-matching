@@ -472,10 +472,11 @@ QMainWindow, QWidget { background: #f6f8fc; color: #1e293b;
     padding: 20px;
 }
 
-/* 上传区 */
+/* 上传区：padding 与 min-height 收紧，避免 DropZone 被撑得过高，
+   让校验页/排版页"从上向下紧凑排列"而不是看起来像两块平分空间 */
 #DropZone {
-    border: 2px dashed #d1d9e6; border-radius: 16px; padding: 36px;
-    background: white; min-height: 160px;
+    border: 2px dashed #d1d9e6; border-radius: 16px; padding: 20px;
+    background: white; min-height: 120px;
 }
 #DropZone:hover { border-color: #2563eb; background: #f0f7ff; }
 
@@ -891,12 +892,15 @@ class MainWindow(QMainWindow):
         self.v_error_table.itemSelectionChanged.connect(self._on_error_row_selected)
         twl.addLayout(top); twl.addWidget(self.v_error_table, 1)
         self.v_error_wrap.hide()
-        lay.addWidget(self.v_error_wrap, 1)
+        # v_error_wrap 不再独占剩余空间（stretch=0）：让它按内容自然高度
+        # 显示，配合末尾 addStretch(1) 实现从上向下紧凑排列。
+        lay.addWidget(self.v_error_wrap, 0)
 
-        # 日志区
-        self.v_log = QPlainTextEdit(); self.v_log.setObjectName("LogView")
-        self.v_log.setReadOnly(True); self.v_log.setMaximumHeight(180)
-        lay.addWidget(self.v_log)
+        # 日志区已统一迁移到设置页：用户要求"✓ 校验完成..."等
+        # 日志只出现在设置页，校验页和排版页不再显示日志框。
+        # 末尾 addStretch(1)：把剩余空间推到底部，让所有可见元素
+        # （页头/上传区/进度条/统计卡/错误表）从顶部紧凑向下排列。
+        lay.addStretch(1)
         return page
 
     # ---------- 页 2：排版修复 ----------
@@ -958,11 +962,12 @@ class MainWindow(QMainWindow):
             "border: 1px solid #bbf7d0; border-radius: 12px;")
         lay.addWidget(self.f_result)
 
-        # 日志 / 进度
+        # 进度条（日志已迁移到设置页，此处仅保留进度条）
         self.f_progress = QProgressBar(); self.f_progress.setValue(0); self.f_progress.hide()
-        self.f_log = QPlainTextEdit(); self.f_log.setObjectName("LogView")
-        self.f_log.setReadOnly(True); self.f_log.setMaximumHeight(220)
-        lay.addWidget(self.f_progress); lay.addWidget(self.f_log)
+        lay.addWidget(self.f_progress)
+        # 末尾 addStretch(1)：把剩余空间推到底部，让页头/参数配置/结果/
+        # 进度条从顶部紧凑向下排列，不再被 QVBoxLayout 默认留在中间。
+        lay.addStretch(1)
         return page
 
     # ---------- 页 3：批注 ----------
@@ -978,8 +983,17 @@ class MainWindow(QMainWindow):
         self.a_table = QTableWidget(0, 4)
         self.a_table.setHorizontalHeaderLabels(["文档", "生成日期", "批注数量", "操作"])
         self.a_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # 操作列用 Fixed + setColumnWidth 强制固定列宽：ResizeToContents
+        # 依赖 sizeHint 计算列宽，对 setCellWidget 的 cell 在某些 Qt 版本
+        # 下计算不准导致"打开目录"按钮被裁成一半。Fixed 模式直接用
+        # setColumnWidth 强制 120px，完全不依赖 sizeHint，按钮必能完整显示。
+        self.a_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.a_table.setColumnWidth(3, 120)
         self.a_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.a_table.verticalHeader().setVisible(False)
+        # 设置行高 44px：btn-sm 按钮 padding 4×2 + font 12 + min-height 18 ≈ 40px，
+        # QTableWidget 默认行高约 30px 不够，会导致"打开目录"按钮垂直方向被裁成一半。
+        self.a_table.verticalHeader().setDefaultSectionSize(44)
         lay.addWidget(self.a_table, 1)
         return page
 
@@ -996,11 +1010,16 @@ class MainWindow(QMainWindow):
         self.r_table = QTableWidget(0, 4)
         self.r_table.setHorizontalHeaderLabels(["报告名称", "生成时间", "大小 (KB)", "操作"])
         self.r_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        # 操作列改用 ResizeToContents：Stretch 会让操作列被等比压缩，
-        # 导致按钮被裁成一半；ResizeToContents 让列宽自适应按钮的真实宽度。
-        self.r_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        # 操作列用 Fixed + setColumnWidth 强制固定 180px：ResizeToContents
+        # 依赖 sizeHint 计算列宽，对 setCellWidget 的 cell 在某些 Qt 版本
+        # 下计算不准导致按钮被裁。Fixed 模式完全不依赖 sizeHint。
+        self.r_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        self.r_table.setColumnWidth(3, 180)
         self.r_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.r_table.verticalHeader().setVisible(False)
+        # 设置行高 44px：btn-sm 按钮 padding 4×2 + font 12 + min-height 18 ≈ 40px，
+        # QTableWidget 默认行高约 30px 不够，会导致按钮垂直方向被裁成一半。
+        self.r_table.verticalHeader().setDefaultSectionSize(44)
         lay.addWidget(self.r_table, 1)
         return page
 
@@ -1088,7 +1107,16 @@ class MainWindow(QMainWindow):
         f(r, 0, "输出目录", self.s_out_dir); f(r, 1, "报告目录", self.s_rep_dir); r += 1
         gl.addWidget(self.s_auto_anno, r, 0, 1, 2); r += 1
         gl.addWidget(self.s_run_test, r, 0, 1, 2)
-        lay.addWidget(gb); lay.addStretch(1)
+        lay.addWidget(gb)
+
+        # 统一日志区：校验/批注/排版等所有操作的日志统一在此显示，
+        # 校验页和排版页不再有日志框（用户要求"只出现在设置里"）。
+        log_label = QLabel("运行日志"); log_label.setStyleSheet(
+            "font-weight:600; color:#0f172a; margin-top:4px;")
+        lay.addWidget(log_label)
+        self.s_log = QPlainTextEdit(); self.s_log.setObjectName("LogView")
+        self.s_log.setReadOnly(True); self.s_log.setMinimumHeight(180)
+        lay.addWidget(self.s_log, 1)
         return page
 
     # ---------- 底部状态栏 ----------
@@ -1383,6 +1411,9 @@ class MainWindow(QMainWindow):
             self.v_error_table.setItem(i, 5, QTableWidgetItem(e.get("segment", "")))
             self.v_error_table.setItem(i, 6, QTableWidgetItem(e.get("action", "") or "—"))
             op_btn = self._make_btn("定位", "btn-sm btn-primary")
+            # setFixedWidth 让按钮 sizeHint 同步设为 64，配合操作列 Fixed 80px
+            # 双保险确保"定位"按钮水平方向完整显示。
+            op_btn.setFixedWidth(64)
             op_btn.clicked.connect(lambda _=False, row=i: self._locate_error(row))
             self.v_error_table.setCellWidget(i, 7, op_btn)
 
@@ -1571,13 +1602,20 @@ class MainWindow(QMainWindow):
             self.r_table.setItem(i, 1, QTableWidgetItem(mt))
             self.r_table.setItem(i, 2, QTableWidgetItem(sz))
             cell = QWidget(); lay = QHBoxLayout(cell); lay.setContentsMargins(4,2,4,2); lay.setSpacing(6)
+            # cell.setMinimumWidth 双保险：ResizeToContents 用 sizeHint 算列宽，
+            # 对 setCellWidget 的 cell 在某些 Qt 版本下 sizeHint 计算不准，
+            # 显式给 cell 设最小宽度确保列宽足够，按钮不再被裁成一半。
+            cell.setMinimumWidth(160)
             open_btn = self._make_btn("打开", "btn-sm btn-success")
-            open_btn.setMinimumWidth(64)
+            open_btn.setFixedWidth(72)
             open_btn.clicked.connect(lambda _=False, p=fp: self._open_with_system(p))
             del_btn = self._make_btn("删除", "btn-sm btn-danger")
-            del_btn.setMinimumWidth(64)
+            del_btn.setFixedWidth(72)
             del_btn.clicked.connect(lambda _=False, p=fp, r=i: self._delete_report(p, r))
-            lay.addWidget(open_btn); lay.addWidget(del_btn); lay.addStretch(1)
+            # 不再加 addStretch(1)：stretch 会让 cell 的 sizePolicy 变成
+            # MinimumExpanding，干扰 ResizeToContents 的列宽计算，且会把
+            # 按钮挤到最左导致裁切。按钮靠左自然排列即可。
+            lay.addWidget(open_btn); lay.addWidget(del_btn)
             self.r_table.setCellWidget(i, 3, cell)
 
     def _delete_report(self, path: str, row: int):
@@ -1679,17 +1717,19 @@ class MainWindow(QMainWindow):
 
     # ===================== 辅助：工具函数 =====================
     def _append_log(self, msg: str, level: str = "info"):
+        # 日志统一显示在设置页的 s_log；校验页/排版页的日志框已移除。
+        # 用 getattr 容错：如果用户从未切到设置页导致 s_log 未创建，
+        # 跳过日志写入而不是抛 AttributeError。
         from PySide6.QtGui import QTextCursor
         color_map = {"good": "#4ade80", "warn": "#fbbf24", "error": "#fca5a5",
                      "info": "#e2e8f0", "debug": "#94a3b8"}
         color = color_map.get(level, color_map["info"])
-        self.v_log.appendHtml(f'<span style="color:{color}">{msg}</span>')
-        c = self.v_log.textCursor(); c.movePosition(QTextCursor.End)
-        self.v_log.setTextCursor(c)
-        if hasattr(self, "f_log"):
-            self.f_log.appendHtml(f'<span style="color:{color}">{msg}</span>')
-            c2 = self.f_log.textCursor(); c2.movePosition(QTextCursor.End)
-            self.f_log.setTextCursor(c2)
+        s_log = getattr(self, "s_log", None)
+        if s_log is None:
+            return
+        s_log.appendHtml(f'<span style="color:{color}">{msg}</span>')
+        c = s_log.textCursor(); c.movePosition(QTextCursor.End)
+        s_log.setTextCursor(c)
 
     def _refresh_status_bar(self):
         try:
