@@ -41,8 +41,10 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -624,6 +626,305 @@ QLabel.tag-segment { background: #e2e8f0; color: #334155; }
 
 
 # ---------------------------------------------------------------------------
+# LLM 方案管理弹窗
+# ---------------------------------------------------------------------------
+
+def _mask_key(key) -> str:
+    """把 API Key 显示成 ``***abcd``，不完整的 key 全部打码。"""
+    key = str(key or "").strip()
+    if not key:
+        return "（未填）"
+    return "****" + key[-4:] if len(key) > 4 else "*" * len(key)
+
+
+class _LLMTestWorker(QThread):
+    """后台跑 LLM 连接测试，避免网络请求卡死界面线程。
+
+    故意不挂到弹窗上：网络请求可能挂很久，用户在这期间关掉「LLM 设置」窗口，
+    带父对象的运行中 QThread 会被 Qt 直接 abort（"Destroyed while thread is
+    still running"）。改用引用池 + deleteLater，线程跑完自己清理。
+    """
+
+    done = Signal(bool, str)
+
+    # 运行中的测试线程引用池，防止被 Python 回收
+    _live = []
+
+    def __init__(self, profile: dict):
+        super().__init__(None)
+        self._profile = profile
+        self.profile_label = str((profile or {}).get("name") or "").strip() or "（未命名）"
+        self.finished.connect(self._dispose)
+        _LLMTestWorker._live.append(self)
+
+    def run(self):
+        from engine.llm_client import LLMClient
+        try:
+            client = LLMClient(profile=self._profile)
+            ok, message = client.test_connection()
+        except Exception as exc:
+            ok, message = False, f"测试异常: {exc}"
+        self.done.emit(ok, message)
+
+    def _dispose(self):
+        try:
+            _LLMTestWorker._live.remove(self)
+        except ValueError:
+            pass
+        self.deleteLater()
+
+
+class LLMProfileDialog(QDialog):
+    """LLM 方案（profile）管理弹窗：新建 / 编辑 / 删除 / 设为当前 / 测试连接。
+
+    一个方案 = 一套 OpenAI 兼容端点（name / base_url / api_key / model）。
+    用户在设置页点「LLM 设置」打开本窗口，可以并存多个方案并切换当前生效的那个，
+    而不是每次覆盖同一个配置文件。
+
+    工作副本语义：编辑框里的内容**不会立刻写盘**，必须点「保存当前」才落到
+    ``config/llm_profiles.yaml``。这样用户能先填好、用「测试当前」验证连通性，
+    再决定要不要保存——测试用的是编辑框里的值，不是已保存的值。
+
+    方案改动后发出 ``changed``，设置页据此刷新「当前方案」摘要。
+    """
+
+    changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("LLM 设置 — 方案管理")
+        self.resize(780, 480)
+        self._build()
+        self._reload_list()
+        self._on_select()
+
+    # ---------- 构建界面 ----------
+    def _build(self):
+        root = QHBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(16)
+
+        # 左：方案列表
+        left = QVBoxLayout()
+        left.setSpacing(6)
+        title = QLabel("已保存的方案")
+        title.setStyleSheet("font-weight:600; color:#0f172a;")
+        self.profile_list = QListWidget()
+        self.profile_list.setSelectionMode(QListWidget.SingleSelection)
+        self.profile_list.setMinimumWidth(250)
+        self.profile_list.itemSelectionChanged.connect(self._on_select)
+        left.addWidget(title)
+        left.addWidget(self.profile_list, 1)
+        root.addLayout(left, 1)
+
+        # 右：编辑区
+        right = QVBoxLayout()
+        right.setSpacing(10)
+        box = QGroupBox("方案详情")
+        form = QFormLayout(box)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+        self.ed_name = QLineEdit()
+        self.ed_name.setPlaceholderText("例如：DeepSeek / 公司网关")
+        self.ed_base = QLineEdit()
+        self.ed_base.setPlaceholderText("https://api.deepseek.com/v1")
+        self.ed_key = QLineEdit()
+        self.ed_key.setEchoMode(QLineEdit.Password)
+        self.ed_key.setPlaceholderText("sk-...")
+        self.ed_model = QLineEdit()
+        self.ed_model.setPlaceholderText("deepseek-chat")
+        form.addRow("名称", self.ed_name)
+        form.addRow("Base URL", self.ed_base)
+        form.addRow("API Key", self.ed_key)
+        form.addRow("Model", self.ed_model)
+        right.addWidget(box)
+
+        edit_row = QHBoxLayout()
+        self.btn_new = QPushButton("＋ 新建方案")
+        self.btn_save = QPushButton("💾 保存当前")
+        self.btn_delete = QPushButton("🗑 删除所选")
+        self.btn_new.clicked.connect(self._new_profile)
+        self.btn_save.clicked.connect(self._save_current)
+        self.btn_delete.clicked.connect(self._delete_selected)
+        edit_row.addWidget(self.btn_new)
+        edit_row.addWidget(self.btn_save)
+        edit_row.addWidget(self.btn_delete)
+        right.addLayout(edit_row)
+
+        tip = QLabel(
+            "提示：「测试当前」验证的是编辑框里正在编辑的值；「设为当前」"
+            "作用于列表中选中的已保存方案。"
+        )
+        tip.setWordWrap(True)
+        tip.setStyleSheet("color:#64748b; font-size:12px;")
+        right.addWidget(tip)
+
+        bottom = QHBoxLayout()
+        self.btn_current = QPushButton("✓ 设为当前方案")
+        self.btn_test = QPushButton("🔌 测试当前")
+        self.btn_current.clicked.connect(self._set_current)
+        self.btn_test.clicked.connect(self._test_current)
+        bottom.addStretch(1)
+        bottom.addWidget(self.btn_current)
+        bottom.addWidget(self.btn_test)
+        self.btn_cancel = QPushButton("取消")
+        self.btn_ok = QPushButton("完成")
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_ok.clicked.connect(self.accept)
+        bottom.addWidget(self.btn_cancel)
+        bottom.addWidget(self.btn_ok)
+        right.addLayout(bottom)
+        right.addStretch(1)
+
+        root.addLayout(right, 1)
+
+    # ---------- 数据 ----------
+    def _fields(self) -> dict:
+        """Read the four edit fields into a profile dict."""
+        return {
+            "name": self.ed_name.text().strip(),
+            "base_url": self.ed_base.text().strip(),
+            "api_key": self.ed_key.text().strip(),
+            "model": self.ed_model.text().strip(),
+        }
+
+    def _fill(self, profile: dict):
+        self.ed_name.setText(profile.get("name", ""))
+        self.ed_base.setText(profile.get("base_url", ""))
+        self.ed_key.setText(profile.get("api_key", ""))
+        self.ed_model.setText(profile.get("model", ""))
+
+    def _selected_name(self) -> str:
+        """当前**选中**的方案名；没选中就返回空串。
+
+        必须看 selectedItems() 而不是 currentItem()：setCurrentRow 只移动焦点
+        不改变选中，用 currentItem 会让「新建方案」之后仍然指向上一个方案，
+        结果一次保存就把旧方案覆盖掉。
+        """
+        items = self.profile_list.selectedItems()
+        return items[0].data(Qt.UserRole) if items else ""
+
+    def _reload_list(self, select_name: str = ""):
+        """Rebuild the list from the store; restore selection by name."""
+        from engine import llm_profiles
+        names = llm_profiles.profile_names()
+        active = llm_profiles.active_name()
+        self.profile_list.blockSignals(True)
+        self.profile_list.clear()
+        for name in names:
+            profile = llm_profiles.get_profile(name) or {}
+            text = f"{'● ' if name == active else '   '}{name}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, name)
+            item.setToolTip(f"{profile.get('base_url', '')}\nmodel: {profile.get('model', '')}")
+            self.profile_list.addItem(item)
+        if select_name:
+            for i in range(self.profile_list.count()):
+                if self.profile_list.item(i).data(Qt.UserRole) == select_name:
+                    self.profile_list.item(i).setSelected(True)
+                    break
+        self.profile_list.blockSignals(False)
+        self._on_select()
+
+    def _on_select(self):
+        """Load the selected stored profile into the edit fields."""
+        name = self._selected_name()
+        if not name:
+            return
+        from engine import llm_profiles
+        profile = llm_profiles.get_profile(name)
+        if profile:
+            self._fill(profile)
+
+    # ---------- 动作 ----------
+    def _new_profile(self):
+        from engine import llm_profiles
+        base = "新方案"
+        names = set(llm_profiles.profile_names())
+        seq = 1
+        while f"{base}{seq}" in names:
+            seq += 1
+        self._fill({"name": f"{base}{seq}", "base_url": "", "api_key": "", "model": ""})
+        # 新建方案 = 不基于任何已保存方案，必须连焦点项一起清掉
+        self.profile_list.clearSelection()
+        self.profile_list.setCurrentRow(-1)
+        self.ed_name.setFocus()
+        self.ed_name.selectAll()
+
+    def _save_current(self):
+        """Upsert the edit fields into the store. Returns the saved name.
+
+        传 ``old_name`` 是为了改名场景：选中「公司网关」把名字改成「网关A」后保存，
+        旧条目必须一并删掉，否则库里会同时留着两个指向同一端点的方案。
+        """
+        from engine import llm_profiles
+        profile = self._fields()
+        if not profile["name"]:
+            QMessageBox.warning(self, "缺少名称", "请先给这个方案起个名字。")
+            return ""
+        saved = llm_profiles.upsert_profile(profile, old_name=self._selected_name())
+        self._reload_list(saved["name"])
+        self.changed.emit()
+        return saved["name"]
+
+    def _delete_selected(self):
+        from engine import llm_profiles
+        name = self._selected_name()
+        if not name:
+            QMessageBox.information(self, "未选择", "请先在左侧列表选中要删除的方案。")
+            return
+        answer = QMessageBox.question(
+            self, "删除方案",
+            f"确定删除方案「{name}」？\n其中的 API Key 将一并删除，此操作不可撤销。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        llm_profiles.delete_profile(name)
+        self._reload_list("")
+        self._fill({"name": "", "base_url": "", "api_key": "", "model": ""})
+        self.changed.emit()
+
+    def _set_current(self):
+        from engine import llm_profiles
+        name = self._selected_name()
+        if not name:
+            QMessageBox.information(self, "未选择", "请先在左侧列表选中一个已保存的方案。")
+            return
+        if llm_profiles.set_active(name):
+            self._reload_list(name)
+            self.changed.emit()
+            QMessageBox.information(self, "已切换", f"当前方案已切换为「{name}」。")
+        else:
+            QMessageBox.warning(self, "切换失败", f"未找到方案「{name}」。")
+
+    def _test_current(self):
+        profile = self._fields()
+        if not profile["api_key"]:
+            QMessageBox.warning(self, "缺少 API Key", "请先在上方填入 API Key 再测试连接。")
+            return
+        self.btn_test.setEnabled(False)
+        self.btn_test.setText("测试中…")
+        worker = _LLMTestWorker(profile)
+        worker.done.connect(self._on_test_done)
+        worker.start()
+
+    def _on_test_done(self, ok: bool, message: str):
+        """测试完成回调。
+
+        请求还没回来时用户可能已经关掉了本窗口；C++ 侧销毁后访问控件会抛
+        RuntimeError，这里必须吞掉而不是让整个信号投递链报红。
+        """
+        try:
+            self.btn_test.setEnabled(True)
+            self.btn_test.setText("🔌 测试当前")
+            box = QMessageBox.information if ok else QMessageBox.warning
+            box(self, "连接成功" if ok else "连接失败", message)
+        except RuntimeError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # 主窗口
 # ---------------------------------------------------------------------------
 class MainWindow(QMainWindow):
@@ -649,6 +950,7 @@ class MainWindow(QMainWindow):
         # 工作线程
         self._thread: QThread | None = None
         self._worker: Worker | None = None
+        self._llm_test_worker: _LLMTestWorker | None = None
         # 规则模板：默认湖北汽院小论文（与 cli 默认保持可不同）
         self.rules_path = resolve("config", "schools",
                                   "rules_湖北汽院_优秀小论文.yaml")
@@ -806,6 +1108,9 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._build_view_reports())
         self.stack.addWidget(self._build_view_rules())
         self.stack.addWidget(self._build_view_settings())
+        self._load_settings()
+        # 当前生效的 LLM 方案摘要（设置页那一栏）
+        self._refresh_llm_summary()
 
         outer = QScrollArea(); outer.setWidgetResizable(True); outer.setFrameShape(QFrame.NoFrame)
         outer.setObjectName("MainContent")
@@ -1111,8 +1416,17 @@ class MainWindow(QMainWindow):
         gb = QGroupBox("偏好")
         gl = QGridLayout(gb); gl.setHorizontalSpacing(24); gl.setVerticalSpacing(14)
 
-        self.s_api = QLineEdit(); self.s_api.setEchoMode(QLineEdit.Password)
-        self.s_api.setPlaceholderText("sk-...")
+        # LLM 走方案管理弹窗，不再在这里直接暴露一个 Key 输入框——
+        # 多个方案并存、可切换，比覆盖同一个字段更符合真实使用（多厂商/多团队）。
+        self.s_llm_summary = QLabel()
+        self.s_llm_summary.setStyleSheet("color:#334155; font-size:13px;")
+        self.s_llm_btn = self._make_btn("⚙️ LLM 设置…", "btn-outline")
+        llm_field = QWidget()
+        llm_field_lay = QHBoxLayout(llm_field)
+        llm_field_lay.setContentsMargins(0, 0, 0, 0)
+        llm_field_lay.setSpacing(8)
+        llm_field_lay.addWidget(self.s_llm_summary, 1)
+        llm_field_lay.addWidget(self.s_llm_btn)
         self.s_default_rule = QComboBox()
         for p in sorted(self._list_rules_files()):
             self.s_default_rule.addItem(p)
@@ -1130,7 +1444,7 @@ class MainWindow(QMainWindow):
             gl.addWidget(l, row, col * 2); gl.addWidget(w, row, col * 2 + 1)
 
         r = 0
-        f(r, 0, "LLM API Key", self.s_api); f(r, 1, "默认规则文件", self.s_default_rule); r += 1
+        f(r, 0, "LLM 设置", llm_field); f(r, 1, "默认规则文件", self.s_default_rule); r += 1
         f(r, 0, "输出目录", self.s_out_dir); f(r, 1, "报告目录", self.s_rep_dir); r += 1
         gl.addWidget(self.s_auto_anno, r, 0, 1, 2); r += 1
         gl.addWidget(self.s_run_test, r, 0, 1, 2)
@@ -1145,6 +1459,55 @@ class MainWindow(QMainWindow):
         self.s_log.setReadOnly(True); self.s_log.setMinimumHeight(180)
         lay.addWidget(self.s_log, 1)
         return page
+
+    def _load_settings(self) -> bool:
+        """读取 gui_settings.json，恢复上次的偏好。
+
+        历史上这里只有「保存」没有「读取」：用户在设置页填好点保存，重启之后
+        又全部回到默认值，等于白填。读取侧一律宽容——文件缺失、字段缺失、
+        保存的路径已经不存在，都静默回退到默认，不让设置页起不来。
+
+        必须在 ``_build_stack()`` 之后调用：下拉框和输入框都在建页时创建。
+        """
+        p = resolve("gui_settings.json")
+        if not os.path.exists(p):
+            return False
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                data = json.load(fh) or {}
+        except Exception as exc:
+            self._append_log(f"设置文件读取失败，已用默认值：{exc}", "warn")
+            return False
+        if not isinstance(data, dict):
+            return False
+
+        rules_rel = data.get("rules_path")
+        if isinstance(rules_rel, str) and rules_rel.strip():
+            rules_abs = resolve(rules_rel)
+            if os.path.isfile(rules_abs):
+                self.rules_path = rules_abs
+                self._append_log(f"已恢复规则文件：{rules_rel}", "good")
+            else:
+                self._append_log(
+                    f"上次保存的规则文件已不存在，沿用默认：{rules_abs}", "warn")
+        # 按落定的 rules_path 重新选中下拉框（建页时选的是默认值）
+        if self.s_default_rule.count():
+            idx = self.s_default_rule.findText(
+                os.path.relpath(self.rules_path, resolve("config")))
+            if idx >= 0:
+                self.s_default_rule.setCurrentIndex(idx)
+
+        for widget, key in ((self.s_out_dir, "output_dir"),
+                            (self.s_rep_dir, "reports_dir")):
+            val = data.get(key)
+            if isinstance(val, str) and val.strip():
+                widget.setText(val.strip())
+
+        if isinstance(data.get("auto_annotate"), bool):
+            self.s_auto_anno.setChecked(bool(data["auto_annotate"]))
+
+        self._append_log(f"已恢复上次设置 ← {p}", "good")
+        return True
 
     # ---------- 底部状态栏 ----------
     def _build_status_bar(self) -> QWidget:
@@ -1229,6 +1592,7 @@ class MainWindow(QMainWindow):
         self.s_save.clicked.connect(self._save_settings)
         self.s_test.clicked.connect(self._test_api)
         self.s_run_test.clicked.connect(self._run_end_to_end_demo)
+        self.s_llm_btn.clicked.connect(self._open_llm_settings)
 
     # ---------- 视图切换 ----------
     def _switch_tab(self, key: str, clicked_btn: QPushButton):
@@ -1694,23 +2058,31 @@ class MainWindow(QMainWindow):
         self._append_log("✓ 已复制 YAML 规则文本到剪贴板。", "info")
 
     # ===================== 设置页 =====================
+    #: config/ 下非规则文件，不能出现在"默认规则文件"下拉框里。
+    _NON_RULE_CONFIG_FILES = {"api_config.yaml", "llm_profiles.yaml", "prompt_template.md"}
+
     def _list_rules_files(self) -> list[str]:
         config_dir = resolve("config")
         out = []
         for root, _dirs, files in os.walk(config_dir):
             for fn in files:
-                if fn.endswith((".yaml", ".yml")) and "template" not in fn and "api" not in fn:
-                    rel = os.path.relpath(os.path.join(root, fn), config_dir)
-                    out.append(rel)
+                if not fn.endswith((".yaml", ".yml")):
+                    continue
+                if fn in self._NON_RULE_CONFIG_FILES or "template" in fn:
+                    continue
+                rel = os.path.relpath(os.path.join(root, fn), config_dir)
+                out.append(rel)
         return out
 
     def _save_settings(self):
+        # LLM 凭据不写进 gui_settings.json：那是普通用户数据文件，
+        # 历史上把明文 api_key 存在这里、而该文件未被 gitignore，容易误提交。
+        # LLM 凭据只存放在 config/llm_profiles.yaml（已 gitignore）。
         data = {
             "rules_path": os.path.join("config", self.s_default_rule.currentText()),
             "output_dir": self.s_out_dir.text().strip(),
             "reports_dir": self.s_rep_dir.text().strip(),
             "auto_annotate": self.s_auto_anno.isChecked(),
-            "api_key": self.s_api.text().strip() or None,
         }
         p = resolve("gui_settings.json")
         with open(p, "w", encoding="utf-8") as fh:
@@ -1719,15 +2091,48 @@ class MainWindow(QMainWindow):
         self.rules_path = resolve(data["rules_path"])
         self._append_log(f"✓ 设置已保存 → {p}", "good")
 
+    def _refresh_llm_summary(self):
+        """刷新设置页的「当前方案」摘要标签。"""
+        from engine import llm_profiles
+        profile = llm_profiles.active_profile()
+        if profile and profile["api_key"]:
+            model = profile["model"] or "（未填 model）"
+            self.s_llm_summary.setText(
+                f"当前方案：{profile['name']}  ·  {model}  ·  Key {_mask_key(profile['api_key'])}"
+            )
+        elif profile:
+            self.s_llm_summary.setText(f"当前方案：{profile['name']}  ·  未填 API Key")
+        else:
+            self.s_llm_summary.setText("尚未配置 LLM 方案")
+
+    def _open_llm_settings(self):
+        """打开 LLM 方案管理弹窗；关闭后刷新摘要。"""
+        dlg = LLMProfileDialog(self)
+        dlg.changed.connect(self._refresh_llm_summary)
+        dlg.exec_()
+        self._refresh_llm_summary()
+
     def _test_api(self):
-        key = self.s_api.text().strip()
-        if not key:
-            QMessageBox.warning(self, "未填 API Key", "请先在设置里填入 LLM API Key。")
+        """测试**当前生效**的方案（不是编辑中的草稿），走后台线程不卡界面。"""
+        from engine import llm_profiles
+        profile = llm_profiles.active_profile()
+        if not profile or not profile["api_key"]:
+            QMessageBox.warning(self, "未配置", "请先在「LLM 设置」里新建一个带 API Key 的方案。")
             return
-        # 调用 cmd_test_api：GuiBackend 未单独封装，直接走继承来的 CLI.cmd_test_api
+        self._llm_test_worker = _LLMTestWorker(dict(profile))
+        self._llm_test_worker.done.connect(self._on_llm_test_done)
+        self._llm_test_worker.start()
+
+    def _on_llm_test_done(self, ok: bool, message: str):
+        """主界面「测试连接」的回调。窗口销毁后访问控件会抛 RuntimeError。"""
         try:
-            self.backend.cmd_test_api([])
-        except SystemExit:
+            worker = self._llm_test_worker
+            label = worker.profile_label if worker else "（未知）"
+            self._append_log(("✓ " if ok else "✗ ") + f"方案「{label}」：{message}",
+                             "good" if ok else "warn")
+            if not ok:
+                QMessageBox.warning(self, "连接失败", message)
+        except RuntimeError:
             pass
 
     def _run_end_to_end_demo(self):

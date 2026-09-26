@@ -1,6 +1,6 @@
 # 统一文档格式校验与排版系统
 
-![版本](https://img.shields.io/badge/version-4.4.0-blue)
+![版本](https://img.shields.io/badge/version-4.5.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
 ![UI](https://img.shields.io/badge/UI-prompt__toolkit%20%2B%20rich-orange)
@@ -73,13 +73,15 @@ paper-format-matching/
 │   ├── rules_academic.yaml         # 学术论文规则
 │   ├── schema.md                   # 规则文件 Schema 契约（必读）
 │   ├── prompt_template.md          # AI 生成规则的提示词模板
-│   └── api_config.yaml.example     # LLM API 配置示例（复制为 api_config.yaml 使用）
+│   ├── api_config.yaml.example     # 遗留单配置示例（仍作兜底读取）
+│   ├── llm_profiles.yaml         # LLM 命名方案库（gitignore，由 GUI「LLM 设置」管理）
+│   └── gui_settings.json         # GUI 偏好（gitignore，不含密钥）
 ├── examples/                       # ⭐ /test 自检产物缓存
 │   ├── sample_for_test.docx        # 预置样本（含故意错误，用于自检演示）
 │   ├── sample_formatted.docx       # /test 跑出：格式化产物
 │   ├── sample_fixed.docx           # /test 跑出：修复产物
 │   └── sample_annotated.docx       # /test 跑出：批注产物
-├── tests/                          # 测试（194 个）
+├── tests/                          # 测试（258 个）
 │   ├── test_rule_engine_*.py       # 规则引擎单元测试
 │   ├── test_punctuation.py         # 标点规范化测试
 │   ├── test_heading_regex_dedup.py # 正则常量同源测试
@@ -192,7 +194,7 @@ paper-format-matching/          ← exe 或 cli.py 所在目录
 API Key: sk-xxxxxxxx
 Base URL [https://api.deepseek.com/v1]:
 Model [deepseek-chat]:
-API 配置已保存到 config/api_config.yaml
+API 配置已保存到 config/llm_profiles.yaml（方案「默认」）
 
 # 2. 从 Word 模板生成规则（自动提取格式信息）
 > /get-rules 模板.docx --domain 毕业论文
@@ -209,7 +211,11 @@ API 配置已保存到 config/api_config.yaml
 > /get-rules 规范说明.txt
 ```
 
-> API Key 保存在 `config/api_config.yaml`（已被 .gitignore 忽略，不会上传）。配置示例见 [config/api_config.yaml.example](config/api_config.yaml.example)。
+> **GUI（推荐）**：设置页的「LLM 设置」弹窗里管理多个命名方案（Base URL / API Key / Model），可新建、改名、删除、一键切换当前方案并原地测试连通性。
+>
+> **REPL**：`/set-key` 写入的是同一个方案库里的「默认」方案。
+>
+> 凭据一律保存在 `config/llm_profiles.yaml`（已被 .gitignore 忽略，不会上传）；`config/api_config.yaml` 是历史遗留的单配置格式，仍会被当作兜底方案读取，但已不再写入。配置示例见 [config/api_config.yaml.example](config/api_config.yaml.example)。
 
 ### 使用示例
 
@@ -322,7 +328,7 @@ v2 新增 5 个（需 `schema: contract-v2`，见 [config/schema.md](config/sche
 ## 🧪 测试
 
 ```bash
-# 全部跑（194 个用例，约 2.0s）
+# 全部跑（258 个用例，约 2.7s）
 python -m pytest tests/ -q
 
 # 单独跑某一组

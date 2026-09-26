@@ -24,22 +24,50 @@ def _default_config_path() -> str:
 class LLMClient:
     """OpenAI-compatible API client.
 
-    Config file (config/api_config.yaml) structure:
-        api_key: "sk-xxxx"
-        base_url: "https://api.deepseek.com/v1"  # optional
-        model: "deepseek-chat"                    # optional
+    Configuration resolution, in order:
+
+    1. An explicit ``profile`` dict passed to the constructor.
+    2. The active profile in ``config/llm_profiles.yaml`` (named 方案 managed
+       by the GUI's LLM settings dialog).
+    3. The legacy flat ``config/api_config.yaml`` file, so existing
+       installations and the CLI ``/set-key`` flow keep working unchanged.
     """
 
-    def __init__(self, config_path=None):
+    def __init__(self, config_path=None, profile=None):
         self.config_path = config_path or _default_config_path()
         self.api_key = None
         self.base_url = DEFAULT_BASE_URL
         self.model = DEFAULT_MODEL
+        self.profile_name = ""
         self._client = None
-        self._load_config()
+        if profile is not None:
+            self._apply_profile(profile)
+        else:
+            self._load_active()
 
-    def _load_config(self):
-        """Load API config from YAML file. Does NOT raise if file missing."""
+    def _apply_profile(self, profile):
+        """Adopt one profile dict (see ``engine.llm_profiles.normalize_profile``)."""
+        from engine import llm_profiles
+        p = llm_profiles.normalize_profile(profile)
+        self.profile_name = p["name"]
+        if p["api_key"]:
+            self.api_key = p["api_key"]
+        if p["base_url"]:
+            self.base_url = p["base_url"]
+        if p["model"]:
+            self.model = p["model"]
+
+    def _load_active(self):
+        """Store first, legacy flat file second. Never raises."""
+        from engine import llm_profiles
+        profile = llm_profiles.active_profile()
+        if profile:
+            self._apply_profile(profile)
+            return
+        self._load_legacy()
+
+    def _load_legacy(self):
+        """Load the legacy flat config file. Does NOT raise if file missing."""
         if not os.path.exists(self.config_path):
             return
         try:
@@ -54,23 +82,27 @@ class LLMClient:
         except Exception:
             pass
 
-    def set_config(self, api_key, base_url=None, model=None):
-        """Update config and save to file."""
+    def set_config(self, api_key, base_url=None, model=None, profile_name=None):
+        """Update config and save it as an active named profile.
+
+        ``profile_name`` defaults to the currently active name, so calling this
+        repeatedly edits the same 方案 rather than piling up duplicates.
+        """
+        from engine import llm_profiles
+        name = profile_name or self.profile_name or "默认"
         self.api_key = api_key
         if base_url is not None:
             self.base_url = base_url
         if model is not None:
             self.model = model
-        config_dir = os.path.dirname(self.config_path)
-        if config_dir:
-            os.makedirs(config_dir, exist_ok=True)
-        data = {
-            "api_key": self.api_key,
+        self.profile_name = name
+        llm_profiles.upsert_profile({
+            "name": name,
             "base_url": self.base_url,
+            "api_key": self.api_key,
             "model": self.model,
-        }
-        with open(self.config_path, "w", encoding="utf-8") as fh:
-            yaml.safe_dump(data, fh, allow_unicode=True, default_flow_style=False)
+        })
+        llm_profiles.set_active(name)
         self._client = None
 
     def is_configured(self):
@@ -160,7 +192,10 @@ class LLMClient:
             ok 为 False 时 message 是错误说明。
         """
         if not self.is_configured():
-            return False, "未配置 API Key，请先用 /set-key 设置。"
+            return False, (
+                "未配置 LLM API Key。请在「设置 → LLM 设置」里新建一个方案，"
+                "或在 CLI 里用 /set-key 设置。"
+            )
         try:
             reply = self.chat(
                 system_prompt="You are a connection test assistant.",

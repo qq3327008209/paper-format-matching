@@ -27,9 +27,15 @@ class RuleGenerator:
     4. Parse and save the YAML output
     """
 
-    def __init__(self, llm_client: LLMClient):
-        """Args: llm_client -- an LLMClient instance."""
-        self.llm = llm_client
+    def __init__(self, llm_client: LLMClient = None):
+        """Args: llm_client -- an LLMClient instance.
+
+        Optional: when omitted, a client is built from the active LLM profile
+        (设置 → LLM 设置). ``gui.py`` used to construct ``RuleGenerator()``
+        without arguments, which raised ``TypeError`` the moment the GUI's
+        生成规则 button was clicked.
+        """
+        self.llm = llm_client if llm_client is not None else LLMClient()
 
     def generate_from_docx(self, docx_path, output_path=None, domain_name=None):
         """Generate rules from a Word template document.

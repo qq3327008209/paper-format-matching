@@ -46,5 +46,9 @@ examples/sample_annotated.docx
 *.bak
 *.log
 
-# API 配置（含密钥，勿提交）
+# LLM 凭据（含明文密钥，勿提交）
 config/api_config.yaml
+config/llm_profiles.yaml
+
+# GUI 本地设置（不含密钥，但也不必入库）
+gui_settings.json

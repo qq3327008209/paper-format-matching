@@ -13,7 +13,7 @@ pip install -r requirements.txt      # 运行依赖（含 PySide6，GUI 主入�
 python gui.py                        # PySide6 图形界面（主入口）
 python cli.py                        # 交互式 REPL（遗留入口，同时是 GUI 复用的业务层）
 
-python -m pytest tests/ -q           # 全量（13 个文件 / 135 个 test 函数，参数化后 194 个用例，约 2.0s）
+python -m pytest tests/ -q           # 全量（15 个文件 / 199 个 test 函数，参数化后 258 个用例，约 2.7s）
 python -m pytest tests/test_punctuation.py -q        # 单文件
 python -m pytest tests/test_rule_engine.py::test_xxx -q   # 单用例
 python -m pytest tests/ -q -k sequence                 # 按关键字筛选
@@ -57,11 +57,14 @@ REPL 的路径默认语义：裸文件名 / 相对路径 → 从 `input/` 读、
 
 ### 配置与文档
 
-`config/schema.md` 是规则契约（`contract-v2`），写规则必须对照；`config/prompt_template.md` 是 LLM 生成规则的系统提示词，`config/schools/` 放学校专属规则。`config/api_config.yaml` 含密钥、已被 gitignore（示例为 `.example`）。规则文件至少要有 `segments` + `rules` 两个顶级键。
+`config/schema.md` 是规则契约（`contract-v2`），写规则必须对照；`config/prompt_template.md` 是 LLM 生成规则的系统提示词，`config/schools/` 放学校专属规则。规则文件至少要有 `segments` + `rules` 两个顶级键。
+
+**LLM 凭据分两层，都含明文密钥、都已被 gitignore**：`config/llm_profiles.yaml` 是命名方案库（`engine/llm_profiles.py` 是唯一读写入口，形如 `{"active": 名, "profiles": [{name, base_url, api_key, model}]}`，GUI 设置页的「LLM 设置」弹窗在此新建/改名/删除/切换）；`config/api_config.yaml` 是遗留平铺文件，仅作兜底方案读取、**方案库一旦有内容就不再看它**，写路径已彻底不碰它。解析优先级：构造时显式 `profile` → 方案库当前方案 → 遗留文件。`gui_settings.json` 存 GUI 偏好（规则路径/输出与报告目录/自动批注），**不含任何密钥**，读写两侧都在 `MainWindow`（`_save_settings`/`_load_settings`），读侧必须宽容：文件缺失、字段缺失、保存的路径已失效都要静默回退默认。
 
 ## 版本与口径约定（已对齐，改文档时保持一致）
 
-- **单一版本源**：`engine/__init__.py` 的 `__version__`（当前 4.4.0）。REPL 横幅（`ui/printers.py`）与 GUI 三处版本标签（`gui.py` 经 `ENGINE_VERSION`）都从它读取，**不要在任何地方硬编码版本号**。
+- **单一版本源**：`engine/__init__.py` 的 `__version__`（当前 4.5.0）。REPL 横幅（`ui/printers.py`）与 GUI 三处版本标签（`gui.py` 经 `ENGINE_VERSION`）都从它读取，**不要在任何地方硬编码版本号**。
 - **op 口径**：15 个 = v1 基础 10（`eq`/`in`/`regex`/`range`/`count_min`/`count_max`/`exists`/`before`/`after`/`skip`）+ v2 新增 5（`sequence_consecutive`/`cross_ref_order`/`document_structure`/`page_margins`/`page_size`）。`schema.md` 里「v1 的 10 个 op」指兼容基线，不是总数。
-- **测试口径**：13 个测试文件、135 个 test 函数、参数化后 194 个用例。
+- **测试口径**：15 个测试文件、199 个 test 函数、参数化后 258 个用例。代码 42 个非测试 py / 约 10,676 行，含测试共 59 个 py / 约 13,483 行。
+- `tests/test_gui_llm_dialog.py` 是唯一需要 Qt 的测试文件：模块导入时把 `QT_QPA_PLATFORM` 设为 `offscreen`，并用 session 级 `QApplication` fixture；网络请求一律用 monkeypatch 桩替换 `LLMClient.test_connection`，**不要在测试里真打网络**。GUI 侧后台线程回主线程的回调统一用 `try/except RuntimeError` 兜住「控件已随窗口销毁」，不要依赖 `shiboken6` 判断存活（本项目用的 PySide6 版本没有 `isDeleted`/`isAlive`）。
 - 根目录 `smoke_check_tmp.py` 是 gui 的手写临时冒烟脚本，非测试套件的一部分（不被 pytest 收集为正式用例）。

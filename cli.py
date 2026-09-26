@@ -847,7 +847,10 @@ class CLI:
             return
 
         client.set_config(api_key, base_url, model)
-        ui.print_good(f"API 配置已保存到 {client.config_path}")
+        # 方案库才是真实落盘位置；client.config_path 仍指向遗留文件，
+        # 拿它当保存路径会误导用户去那里找 / 手动编辑。
+        from engine.llm_profiles import profile_store_path
+        ui.print_good(f"API 配置已保存到 {profile_store_path()}（方案「{client.profile_name}」）")
         ui.console.print(f"  base_url: [dim]{client.base_url}[/dim]")
         ui.console.print(f"  model:    [dim]{client.model}[/dim]")
         masked = '*' * (len(api_key) - 4) + api_key[-4:] if len(api_key) >= 4 else '****'
