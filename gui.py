@@ -237,7 +237,8 @@ class GuiBackend(_cli.CLI):
         out_path = _cli._resolve_output_path(f"{stem}_annotated.docx")
         ensure_parent(out_path)
         ok = annotate_document(self.last_file, out_path, self.last_errors)
-        return ok, out_path
+        # annotator.LAST_ERROR 携带真实失败原因，避免 GUI 一律显示"可能是 .doc/.pdf"
+        return ok, out_path, _cli._annotator.LAST_ERROR
 
     def gui_get_rules(self, domain, text, template_path):
         # 复用 cmd_get_rules 底层逻辑，但这里直接从对象方法拿
@@ -394,9 +395,12 @@ class Worker(QObject):
             )
 
         elif self.job.kind == "annotate":
-            ok, out_path = self.backend.gui_annotate()
-            self.progress.emit(100, f"批注已生成 → {out_path}")
-            self.result.emit("annotate", {"ok": ok, "out_path": out_path})
+            ok, out_path, reason = self.backend.gui_annotate()
+            self.progress.emit(
+                100, f"批注已生成 → {out_path}" if ok else f"批注失败：{reason or '未知原因'}"
+            )
+            self.result.emit("annotate",
+                             {"ok": ok, "out_path": out_path, "reason": reason})
 
         elif self.job.kind == "get-rules":
             self.progress.emit(10, "调用 LLM 生成规则...")
@@ -1559,10 +1563,13 @@ class MainWindow(QMainWindow):
     # ===================== 批注 / 报告 =====================
     def _after_annotate(self, p: dict):
         ok, out = p["ok"], p["out_path"]
+        reason = p.get("reason", "")
         if ok:
             self._append_log(f"✓ 批注文档已生成：{out}", "good")
+        elif reason:
+            self._append_log(f"批注失败：{reason}", "warn")
         else:
-            self._append_log(f"批注失败（可能是 .doc / .pdf 非原生支持格式）：{out}", "warn")
+            self._append_log(f"批注失败：{out}", "warn")
         self._refresh_annotations_table()
 
     def _refresh_annotations_table(self):

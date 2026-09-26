@@ -31,9 +31,10 @@ ENV/
 reports/
 annotated/
 
-# 格式化输出（运行时生成）
+# 格式化输出与批注产物（运行时生成）
 *_formatted.docx
 *_fixed.docx
+*_annotated.docx
 
 # /test 自检产物（examples/ 仅服务于 /test，sample_for_test.docx 是预置种子需跟踪）
 examples/sample_formatted.docx

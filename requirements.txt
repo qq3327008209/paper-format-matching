@@ -1,6 +1,8 @@
 python-docx>=0.8.11
 PyYAML>=6.0
 lxml>=4.9
+# engine/extractors/pdf.py 需要；缺它时 PDF 校验会抛 "pypdf is not installed"
+pypdf>=4.0
 openai>=1.0
 prompt_toolkit>=3.0
 rich>=13.0

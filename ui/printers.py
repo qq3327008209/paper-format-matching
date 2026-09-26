@@ -5,11 +5,42 @@
 from __future__ import annotations
 
 import os
+import sys
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+
+
+def _harden_stdout() -> None:
+    """让 stdout/stderr 在遇到 GBK 无法编码的字符时替换而非抛异常。
+
+    中文 Windows 控制台的默认编码是 GBK（cp936），本模块用的 ✓ ✗ ℹ 三个符号
+    在 GBK 中不存在，未加固时 ``print_good`` 等调用会直接 ``UnicodeEncodeError``
+    把 CLI 打死，连 ``print_error`` 都会连带崩溃。这里保留原始编码（GBK 能覆盖
+    全部中文，不产生乱码），只把 errors 从 strict 放宽为 replace，未加固字符
+    降级为 ``?``。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            encoding = getattr(stream, "encoding", None)
+        except Exception:
+            encoding = None
+        if not encoding:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except Exception:
+            # 非 TTY（重定向/管道、io.StringIO 等）上 reconfigure 可能不可用，
+            # 静默跳过即可，不影响正常输出。
+            pass
+
+
+_harden_stdout()
 
 
 # ------------------------------------------------------------------

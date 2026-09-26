@@ -17,10 +17,16 @@ CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 PR_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 W = f"{{{W_NS}}}"
 R = f"{{{R_NS}}}"
+CT = f"{{{CT_NS}}}"
+PR = f"{{{PR_NS}}}"
 COMMENTS_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
 COMMENTS_REL_TYPE = f"{R_NS}/comments"
 AUTHOR = "格式检查器"
 INITIALS = "CHK"
+
+# 最近一次失败的原因（annotate_document 仍返回 bool 以兼容 CLI/GUI 调用方，
+# 但 bool 无法说明"为什么不支持"，故用此模块级变量把真实原因带出来）。
+LAST_ERROR: str = ""
 
 
 def annotate_document(
@@ -40,10 +46,12 @@ def annotate_document(
     Returns:
         ``True`` on success, ``False`` on failure.
     """
+    global LAST_ERROR
     lower = src_path.lower()
     if lower.endswith(".docx"):
         return _annotate_docx(src_path, dst_path, errors, max_per_paragraph)
     # .doc / .pdf: not supported for in-place annotation
+    LAST_ERROR = "仅支持 .docx 文件"
     logger.warning("Annotator only supports .docx; skipping %s", src_path)
     return False
 
@@ -55,6 +63,8 @@ def _annotate_docx(
     max_per_paragraph: int,
 ) -> bool:
     """Core .docx annotation: copy file, inject comment XML."""
+    global LAST_ERROR
+    LAST_ERROR = ""
     os.makedirs(os.path.dirname(dst_path) or ".", exist_ok=True)
     shutil.copy(src_path, dst_path)
 
@@ -74,8 +84,12 @@ def _annotate_docx(
         para_to_errors.setdefault(idx, []).append((desc, etype))
 
     try:
-        return _write_comments(dst_path, para_to_errors, max_per_paragraph)
+        if _write_comments(dst_path, para_to_errors, max_per_paragraph):
+            return True
+        LAST_ERROR = "文档结构异常：未找到 w:body"
+        return False
     except Exception as exc:
+        LAST_ERROR = f"{type(exc).__name__}: {exc}"
         logger.error("Annotation failed %s: %s", src_path, exc)
         return False
 
@@ -121,21 +135,21 @@ def _write_comments(
 
     # Register content type
     if not has_comments:
-        override = etree.SubElement(ct_tree, f"{CT_NS}Override")
+        override = etree.SubElement(ct_tree, f"{CT}Override")
         override.set("PartName", "/word/comments.xml")
         override.set("ContentType", COMMENTS_CT)
 
     # Register relationship
     if not has_comments:
         existing_rids = [
-            r.get("Id") for r in rels_tree.findall(f"{PR_NS}Relationship")
+            r.get("Id") for r in rels_tree.findall(f"{PR}Relationship")
         ]
         rid = "rIdCmt1"
         i = 1
         while rid in existing_rids:
             i += 1
             rid = f"rIdCmt{i}"
-        rel = etree.SubElement(rels_tree, f"{PR_NS}Relationship")
+        rel = etree.SubElement(rels_tree, f"{PR}Relationship")
         rel.set("Id", rid)
         rel.set("Type", COMMENTS_REL_TYPE)
         rel.set("Target", "comments.xml")

@@ -13,7 +13,7 @@ pip install -r requirements.txt      # 运行依赖（含 PySide6，GUI 主入�
 python gui.py                        # PySide6 图形界面（主入口）
 python cli.py                        # 交互式 REPL（遗留入口，同时是 GUI 复用的业务层）
 
-python -m pytest tests/ -q           # 全量（10 个文件 / 76 个 test 函数，参数化后 126 个用例，约 0.9s）
+python -m pytest tests/ -q           # 全量（11 个文件 / 77 个 test 函数，参数化后 143 个用例，约 0.9s）
 python -m pytest tests/test_punctuation.py -q        # 单文件
 python -m pytest tests/test_rule_engine.py::test_xxx -q   # 单用例
 python -m pytest tests/ -q -k sequence                 # 按关键字筛选
@@ -62,5 +62,5 @@ REPL 的路径默认语义：裸文件名 / 相对路径 → 从 `input/` 读、
 
 - **单一版本源**：`engine/__init__.py` 的 `__version__`（当前 4.4.0）。REPL 横幅（`ui/printers.py`）与 GUI 三处版本标签（`gui.py` 经 `ENGINE_VERSION`）都从它读取，**不要在任何地方硬编码版本号**。
 - **op 口径**：15 个 = v1 基础 10（`eq`/`in`/`regex`/`range`/`count_min`/`count_max`/`exists`/`before`/`after`/`skip`）+ v2 新增 5（`sequence_consecutive`/`cross_ref_order`/`document_structure`/`page_margins`/`page_size`）。`schema.md` 里「v1 的 10 个 op」指兼容基线，不是总数。
-- **测试口径**：10 个测试文件、76 个 test 函数、参数化后 126 个用例。
+- **测试口径**：11 个测试文件、77 个 test 函数、参数化后 143 个用例。
 - 根目录 `smoke_check_tmp.py` 是 gui 的手写临时冒烟脚本，非测试套件的一部分（不被 pytest 收集为正式用例）。

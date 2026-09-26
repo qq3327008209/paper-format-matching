@@ -15,6 +15,7 @@ import os
 import sys
 
 from engine import get_extractor, RuleEngine, Reporter, annotate_document
+from engine import annotator as _annotator
 from engine.paths import resolve, ensure_parent, BASE_DIR
 from format import FormatEngine, Config, PRESETS
 from prompt_toolkit.formatted_text import HTML
@@ -571,7 +572,9 @@ class CLI:
         if ok:
             ui.print_good(f"标注完成: {out_path}")
         else:
-            ui.print_bad("标注失败: 仅支持 .docx 文件。")
+            # annotator.LAST_ERROR 携带真实原因；此前固定打印"仅支持 .docx"会把
+            # 内部异常（如 XML 命名空间错误）误报成文件格式问题。
+            ui.print_bad(f"标注失败: {_annotator.LAST_ERROR or '未知原因'}")
 
     def cmd_test_api(self, args):
         """测试 LLM API 配置是否有效（发一个最小请求）。"""
@@ -665,7 +668,8 @@ class CLI:
         try:
             if self.last_errors and self.last_file:
                 ok_anno = annotate_document(self.last_file, anno_path, self.last_errors)
-                step("批注 /annotate", ok_anno, anno_path if ok_anno else "仅支持 .docx")
+                step("批注 /annotate", ok_anno,
+                     anno_path if ok_anno else f"未生成: {_annotator.LAST_ERROR}")
             else:
                 step("批注 /annotate", False, "无上次校验结果")
         except Exception as exc:
