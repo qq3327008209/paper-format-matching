@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DocFormat Engine · PySide6 图形化界面（原型：ui演示.html）。
+"""DocFormat Engine · PySide6 图形化界面（视觉原型 ui/演示.html 已移除）。
 
 架构：
     - 所有业务逻辑复用 cli.py 的 CliApp 类（_validate_file / _check_fix_core /
@@ -74,7 +74,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from engine import Reporter, annotate_document
+from engine import __version__ as ENGINE_VERSION, Reporter, annotate_document
 from engine.paths import BASE_DIR, ensure_parent, resolve
 from format import Config, FormatEngine
 
@@ -660,7 +660,7 @@ class MainWindow(QMainWindow):
         left = QHBoxLayout()
         left.setSpacing(8)
         title = QLabel("WordFormat Engine"); title.setObjectName("HeaderLogo")
-        ver = QLabel("v4.2.0"); ver.setObjectName("HeaderVersion")
+        ver = QLabel(f"v{ENGINE_VERSION}"); ver.setObjectName("HeaderVersion")
         left.addWidget(title); left.addSpacing(6); left.addWidget(ver); left.addStretch()
 
         right = QHBoxLayout()
@@ -765,7 +765,7 @@ class MainWindow(QMainWindow):
             lay.addWidget(btn)
 
         lay.addStretch(1)
-        footer = QLabel("📀 引擎 4.2.0")
+        footer = QLabel(f"📀 引擎 {ENGINE_VERSION}")
         footer.setObjectName("SidebarFooter")
         footer.setAlignment(Qt.AlignCenter)
         lay.addWidget(footer)
@@ -1741,7 +1741,7 @@ class MainWindow(QMainWindow):
         now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         rule_rel = os.path.relpath(self.rules_path, BASE_DIR) \
             if self.rules_path.startswith(BASE_DIR + os.sep) else self.rules_path
-        self.sb_left.setText(f"📀 引擎 4.2.0 · 规则: {rule_rel}")
+        self.sb_left.setText(f"📀 引擎 {ENGINE_VERSION} · 规则: {rule_rel}")
         self.sb_right.setText(f"🕒 {now}" + (f"   💾 {mem_str}" if mem_str else ""))
 
     def _open_with_system(self, path: str):

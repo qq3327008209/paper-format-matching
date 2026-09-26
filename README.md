@@ -1,6 +1,6 @@
 # 统一文档格式校验与排版系统
 
-![版本](https://img.shields.io/badge/version-4.3.0-blue)
+![版本](https://img.shields.io/badge/version-4.4.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
 ![UI](https://img.shields.io/badge/UI-prompt__toolkit%20%2B%20rich-orange)
@@ -28,7 +28,7 @@
 | **交互式 REPL** | `python cli.py` 进入对话界面，输 `/` 弹命令菜单、Tab 补全、方向键历史 |
 | **彩色富文本输出** | 基于 prompt_toolkit + rich，表格/进度/错误高亮 |
 | **校验 + 排版一体** | 既能检查格式问题，也能按预设自动排版修复 |
-| **引擎领域无关** | 10 个通用 op，换领域只需换 YAML 规则文件 |
+| **引擎领域无关** | 15 个通用 op，换领域只需换 YAML 规则文件 |
 | **规则驱动修复** | YAML 规则可带 `format_action` 字段，校验失败时自动触发修复 |
 | **多格式支持** | .docx / .doc / .wps / .pdf（.doc/.wps 自动转 .docx） |
 | **批量处理** | `/check-dir`、`/format-dir`、`/check-fix-dir` 目录级批量操作 |
@@ -43,7 +43,7 @@
 ```
 paper-format-matching/
 ├── engine/                         # 校验引擎（领域无关）
-│   ├── rule_engine.py              # 规则引擎（10 个 op + 段落分类器 + AST 沙箱）
+│   ├── rule_engine.py              # 规则引擎（15 个 op + 段落分类器 + AST 沙箱）
 │   ├── llm_client.py               # OpenAI 兼容 LLM 客户端
 │   ├── rule_generator.py           # LLM 规则生成器
 │   ├── annotator.py                # Word 批注生成
@@ -78,7 +78,7 @@ paper-format-matching/
 │   ├── sample_formatted.docx       # /test 跑出：格式化产物
 │   ├── sample_fixed.docx           # /test 跑出：修复产物
 │   └── sample_annotated.docx       # /test 跑出：批注产物
-├── tests/                          # 测试（127 个）
+├── tests/                          # 测试（126 个）
 │   ├── test_rule_engine_*.py       # 规则引擎单元测试
 │   ├── test_punctuation.py         # 标点规范化测试
 │   ├── test_heading_regex_dedup.py # 正则常量同源测试
@@ -88,7 +88,7 @@ paper-format-matching/
 └── requirements.txt
 ```
 
-### v4.3 重构亮点
+### v4.3 / v4.4 重构亮点
 
 - **FormatEngine 拆分**：原 1363 行大类拆为 418 行薄门面 + 3 个职责模块（text_loader/symbol_normalizer/paragraph_formatter），公共 API 不变
 - **校验→修复语义闭合**：error dict 携带 `action`/`action_value`，`range/count/order/exists` 等结构性 op 不触发修复
@@ -116,7 +116,7 @@ python cli.py
 ╭───── paper-format-matching ─────╮
 │ 文档格式校验与排版系统          │
 │ 输入 /help 查看命令，/quit 退出 │
-╰───────────── v4.3 ──────────────╯
+╰───────────── v4.4 ──────────────╯
 > /help
 ```
 
@@ -270,7 +270,9 @@ rules:
     format_action: set_font    # 可选：校验失败时自动修复
 ```
 
-### 10 个通用 op
+### 15 个通用 op
+
+v1 基础 10 个：
 
 | op | 含义 | 示例 |
 |----|------|------|
@@ -284,6 +286,16 @@ rules:
 | `before` | 顺序：在某段前 | 摘要在正文之前 |
 | `after` | 顺序：在某段后 | 参考文献在正文之后 |
 | `skip` | 跳过检查 | 封面不检查 |
+
+v2 新增 5 个（需 `schema: contract-v2`，见 [config/schema.md](config/schema.md)）：
+
+| op | 含义 | 示例 |
+|----|------|------|
+| `sequence_consecutive` | 编号连续性 | 标题号 1.1→1.2→1.3 不跳号 |
+| `cross_ref_order` | 引述顺序 | "如图2-1"不得早于图2-1题注 |
+| `document_structure` | 文档结构顺序 | 摘要→正文→参考文献→致谢→附录 |
+| `page_margins` | 文档级页边距 | 上下 2.54cm, 左右 3.17cm（带 tol） |
+| `page_size` | 文档级纸张尺寸 | A4 21×29.7cm |
 
 ### format_action 修复动作
 
@@ -308,7 +320,7 @@ rules:
 ## 🧪 测试
 
 ```bash
-# 全部跑（127 个用例，约 0.7s）
+# 全部跑（126 个用例，约 0.9s）
 python -m pytest tests/ -q
 
 # 单独跑某一组
@@ -318,7 +330,7 @@ python -m pytest tests/test_match_parser_security.py -q
 ```
 
 测试覆盖：
-- 规则引擎：10 个 op、before/after、count、exists、after_h1 章节作用域
+- 规则引擎：15 个 op、before/after、count、exists、after_h1 章节作用域
 - 标点规范化：省略号、括号配对、引号配对、简单标点
 - 安全：YAML 表达式注入对抗（AST 沙箱拒绝 `__import__`/`eval`/`open` 等）
 - 正则同源：`format.engine` 与 `format.ops.heading` 共享同一对象
