@@ -9,9 +9,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 常用命令
 
 ```bash
-pip install -r requirements.txt      # 核心依赖；图形界面另需 pip install PySide6（未在 requirements 中）
-python cli.py                        # 交互式 REPL（主入口，prompt_toolkit + rich）
-python gui.py                        # PySide6 图形界面（原型已删：ui/演示.html）
+pip install -r requirements.txt      # 运行依赖（含 PySide6，GUI 主入口需要）
+python gui.py                        # PySide6 图形界面（主入口）
+python cli.py                        # 交互式 REPL（遗留入口，同时是 GUI 复用的业务层）
 
 python -m pytest tests/ -q           # 全量（10 个文件 / 76 个 test 函数，参数化后 126 个用例，约 0.9s）
 python -m pytest tests/test_punctuation.py -q        # 单文件
@@ -40,9 +40,13 @@ docx/doc/pdf → extractors/ (策略模式, get_extractor 按扩展名分发)
 
 `FormatEngine` 是**薄门面**，只组装子模块；真正的 8 步流水线在 `format/pipeline.py`：加载归一化（DOC/TXT/MD/DOCX/WPS）→ 符号归一（半角→全角、空格/零宽字符）→ 图表题注探测 → 主副标题识别 → 段落分类+字体/段落格式 → 表格 → 页面设置（A4、页边距、页码风格）→ 保存。`format/ops/` 下每个模块是单一职责原子操作，可单独测试，改具体行为优先动 ops/ 而非门面。`format/config.py` 的 `Config` 内置 3 套预设（official/academic/legal）并递归合并用户覆盖项，允许只覆盖单字段。
 
-### 两个前端共用一份逻辑
+### GUI 是主界面，CLI 是遗留入口 + 共享业务层
 
-`cli.py` 的 `CliApp` 是唯一业务编排层；`gui.py`（1797 行 PySide6）**不重写逻辑**，而是 `import cli as _cli` 复用 `CliApp` 及底层引擎。改 CLI 命令行为时会同时影响 GUI。`ui/printers.py` + `ui/input.py` 只负责 rich 渲染与 prompt_toolkit 补全。
+**GUI（`gui.py`）是当前唯一面向用户的界面**，CLI 是前期开发产物、已不被扩展。改功能优先加在 GUI 页面上，不要往 CLI 加新命令。
+
+但 `cli.py` 不能删：`gui.py` 的 `GuiBackend(_cli.CLI)` **子类化** `CLI` 类复用它的业务方法（`_validate_file` / `_check_fix_core` / `_resolve_output_path` 等），**不重写逻辑**。构造时把模块级 `_cli.ui` 换成 `_UiProxy` 代理（`ui.printers` 的打印调用改走 Qt 信号回调），`super().__init__()` 结束后立即还原；后台任务用 `attach_worker_log` / `detach_worker_log` 临时替换 `sink.on_text`，任务结束必须还原，否则下次任务会复用已 `deleteLater` 的 Worker 引用。
+
+推论：**改 `cli.py` 的共用方法会同时影响 GUI**，动之前确认 GUI 调用点（`gui.py` 里搜 `_cli.` 和 `self.gui_` 前缀的封装）。`ui/printers.py` + `ui/input.py` 只服务 CLI 的 rich 渲染与 prompt_toolkit 补全，GUI 不依赖。
 
 ### 路径解析：不要用 `cwd`
 

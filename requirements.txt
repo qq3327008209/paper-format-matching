@@ -4,3 +4,5 @@ lxml>=4.9
 openai>=1.0
 prompt_toolkit>=3.0
 rich>=13.0
+# GUI 主入口（gui.py）需要；cli.py 不依赖它
+PySide6>=6.6

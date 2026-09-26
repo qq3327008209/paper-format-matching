@@ -76,7 +76,9 @@ RuleGenerator 模块提供一种"低代码"方式创建规则文件：用户只�
 
 ## 六、交互入口层（cli.py）
 
-交互入口层通过 `cli.py` 提供一个基于 prompt_toolkit 的**交互式 REPL 命令行界面**。程序启动后自动创建 `input/` 与 `output/` 两个工作目录，用户以 `/` 开头的命令进行操作，每一条命令都经过统一的参数解析器解析（支持双引号包裹含空格路径、`--key value`、`--key=value`、`--key` 无值等多种写法）。CLI 共提供 15 条命令：
+交互入口层有两个：**GUI（`gui.py`，PySide6）是当前唯一面向用户的主界面**，6 个功能页（校验 / 排版修复 / 批注 / 报告 / 规则生成 / 设置），耗时操作用 `QThread` Worker 在后台执行并经信号回传进度；**CLI（`cli.py`）是前期开发产物，作为备用入口保留、不再扩展新命令**。两者共用同一份业务逻辑：`gui.py` 的 `GuiBackend(_cli.CLI)` 子类化 `CLI` 类复用其方法，构造时用 `_UiProxy` 把 `ui.printers` 的打印调用改走 Qt 回调，任务结束后还原。
+
+CLI 基于 prompt_toolkit 实现，程序启动后自动创建 `input/` 与 `output/` 两个工作目录，用户以 `/` 开头的命令进行操作，每一条命令都经过统一的参数解析器解析（支持双引号包裹含空格路径、`--key value`、`--key=value`、`--key` 无值等多种写法）。共注册 18 条命令（含 `/help` 与 `/quit`，业务命令 16 条）：
 
 文档校验类命令包括 `check` 校验单个文件与 `check-dir` 批量校验目录，两者都支持 `--rules` 参数指定非默认规则文件。校验完成后在终端打印结构化的结果表格，并自动写入 CSV 报告。文档修复类命令包括 `format` 按预设排版单个文件与 `format-dir` 批量排版，支持 `--preset` 切换官方/学术/法律三套预设与 `--output` 指定输出路径；`check-fix` 与 `check-fix-dir` 则组合执行"校验+自动修复"两步流程，并把修复数量输出给用户看。`annotate` 命令基于最近一次 `check` 的结果在 Word 文档中插入评论批注。配置类命令包括 `config` 查看当前配置、`preset` 切换排版预设、`save-config` 与 `load-config` 以 JSON 格式持久化和恢复自定义配置。`get-rules` 命令是 LLM 规则生成能力的交互入口，支持 `--text "规范内容"` 从文字直接生成与 `--domain 名称` 指定产物文件名。`test` 命令执行端到端演示：在 `examples/` 目录下跑一遍 校验→格式化→修复→批注 的完整链路，生成四份产物文档供用户直观查看效果。`chat` 命令进入与 LLM 的多轮对话子界面，允许用户询问规则编写、格式规范、YAML 结构等问题。`set-key` 与 `test-api` 用于配置 LLM 的 API Key 与验证连通性。
 
@@ -100,8 +102,8 @@ RuleGenerator 模块提供一种"低代码"方式创建规则文件：用户只�
 
 ```
 paper-format-matching/
-├── cli.py                                  # 交互式 REPL 命令行入口（15 条命令），业务编排层 CliApp
-├── gui.py                                  # PySide6 图形界面，import cli 复用 CliApp（需 pip install PySide6）
+├── cli.py                                  # 遗留 REPL 入口（18 条命令），业务编排层 CLI 类，被 GUI 子类化复用
+├── gui.py                                  # PySide6 图形界面（主入口），子类化 cli.CLI 复用业务层（需 PySide6，已在 requirements.txt）
 ├── CLAUDE.md                               # Claude Code 项目指引
 ├── requirements.txt                        # 依赖清单（python-docx、pypdf、pytest、prompt_toolkit、yaml 等）
 ├── engine/                                 # 校验与报告引擎包

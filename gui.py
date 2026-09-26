@@ -2,7 +2,7 @@
 """DocFormat Engine · PySide6 图形化界面（视觉原型 ui/演示.html 已移除）。
 
 架构：
-    - 所有业务逻辑复用 cli.py 的 CliApp 类（_validate_file / _check_fix_core /
+    - 所有业务逻辑复用 cli.py 的 CLI 类（_validate_file / _check_fix_core /
       annotate_document / FormatEngine 等完全一致的底层）。
     - UI 结构参考 ui演示.html：顶部深色标题栏 + 左侧 6 项导航栏 + 右侧 QStackedWidget
       切换 6 个功能页 + 底部状态栏（引擎版本/当前规则/时钟/内存）。
@@ -79,7 +79,7 @@ from engine.paths import BASE_DIR, ensure_parent, resolve
 from format import Config, FormatEngine
 
 # ---------------------------------------------------------------------------
-# 业务后端：复用 cli.py 的 CliApp，并重写 "print" 通道，使输出流向 GUI。
+# 业务后端：子类化 cli.py 的 CLI 类，并重写 "print" 通道，使输出流向 GUI。
 # ---------------------------------------------------------------------------
 import cli as _cli
 
@@ -277,7 +277,7 @@ class Worker(QObject):
         self._stop = True
 
     def run(self):
-        # 给 backend 的 sink 临时绑定到这个 Worker，这样 CliApp 内部的
+        # 给 backend 的 sink 临时绑定到这个 Worker，这样 CLI 内部的
         # ui.print_* 会作为 log 信号回传主线程。绑定必须在主线程里完成，
         # 通过 attach/detach 配对使用，避免多线程并发改写 on_text。
         self.backend.attach_worker_log(self._emit_log)
@@ -1694,7 +1694,7 @@ class MainWindow(QMainWindow):
         if not key:
             QMessageBox.warning(self, "未填 API Key", "请先在设置里填入 LLM API Key。")
             return
-        # 简单调用 cmd_test_api：复用 GuiBackend 里没有，直接用 CliApp 的 cmd_test_api
+        # 调用 cmd_test_api：GuiBackend 未单独封装，直接走继承来的 CLI.cmd_test_api
         try:
             self.backend.cmd_test_api([])
         except SystemExit:

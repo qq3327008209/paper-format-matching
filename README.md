@@ -25,7 +25,8 @@
 
 | 特性 | 说明 |
 |------|------|
-| **交互式 REPL** | `python cli.py` 进入对话界面，输 `/` 弹命令菜单、Tab 补全、方向键历史 |
+| **PySide6 图形界面** | `python gui.py` 启动，6 个功能页（校验 / 排版修复 / 批注 / 报告 / 规则生成 / 设置），耗时操作后台线程执行 |
+| **交互式 REPL** | `python cli.py` 进入对话界面，输 `/` 弹命令菜单、Tab 补全、方向键历史（前期开发产物，GUI 之外的备用入口） |
 | **彩色富文本输出** | 基于 prompt_toolkit + rich，表格/进度/错误高亮 |
 | **校验 + 排版一体** | 既能检查格式问题，也能按预设自动排版修复 |
 | **引擎领域无关** | 15 个通用 op，换领域只需换 YAML 规则文件 |
@@ -104,13 +105,14 @@ paper-format-matching/
 pip install -r requirements.txt
 ```
 
-### 2. 启动交互式 REPL
+### 2. 启动程序
 
 ```bash
-python cli.py
+python gui.py       # 图形界面（主入口）
+python cli.py       # 命令行 REPL（备用入口，也可脚本化/批量使用）
 ```
 
-进入对话界面后，输入 `/help` 查看所有命令：
+REPL 中输入 `/help` 查看所有命令：
 
 ```
 ╭───── paper-format-matching ─────╮
@@ -171,7 +173,7 @@ paper-format-matching/          ← exe 或 cli.py 所在目录
 | `/config` | 查看当前配置 |
 | `/save-config <file>` | 保存配置到文件 |
 | `/load-config <file>` | 从文件加载配置 |
-| `/rules <file>` | 加载并预览规则文件 |
+| `--rules <file>` | 选项（非独立命令），挂在 `/check`、`/check-dir`、`/check-fix`、`/check-fix-dir` 上指定规则文件 |
 | `/quit` | 退出 |
 
 命令支持可选参数：`--preset <name>`、`--output <path>`、`--rules <path>`、`--domain <名称>`
