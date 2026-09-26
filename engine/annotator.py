@@ -29,6 +29,21 @@ INITIALS = "CHK"
 LAST_ERROR: str = ""
 
 
+def count_annotatable(errors: List[Dict]) -> int:
+    """Count errors that can actually be anchored to a Word paragraph.
+
+    Structural errors (``paragraph_index`` is ``None``) have no paragraph to
+    attach a comment range to and therefore produce no comment. Callers use
+    this to avoid reporting an unmodified copy of the input as a successful
+    annotation -- which is what ``/test`` used to do.
+    """
+    return sum(
+        1 for err in errors
+        if err.get("paragraph_index") is not None
+        and (err.get("description") or "").strip()
+    )
+
+
 def annotate_document(
     src_path: str,
     dst_path: str,
@@ -76,6 +91,9 @@ def _annotate_docx(
             annotatable.append((int(idx), desc, err.get("type", "format")))
 
     if not annotatable:
+        # Nothing to anchor: the output is byte-identical to the input apart
+        # from the copy. Still report success (the operation completed), but
+        # callers can use count_annotatable() to tell the difference.
         logger.info("No annotatable errors for %s", src_path)
         return True
 

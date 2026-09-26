@@ -75,6 +75,7 @@ from PySide6.QtWidgets import (
 )
 
 from engine import __version__ as ENGINE_VERSION, Reporter, annotate_document
+from engine.rule_engine import mismatch_warnings
 from engine.paths import BASE_DIR, ensure_parent, resolve
 from format import Config, FormatEngine
 
@@ -85,6 +86,18 @@ import cli as _cli
 
 
 SUPPORTED_EXTS = _cli.SUPPORTED_EXTS
+
+
+def _coverage_advisories(warnings):
+    """Yield ``(log tag, message)`` pairs for rule-coverage advisories.
+
+    与 CLI 的 ``_print_coverage_warnings`` 同一口径：构成错配判据的告警标
+    ``[规则不匹配]``，死规则 / 未匹配段类等纯信息标 ``[规则覆盖]``——后者不能
+    被当成"文档不合规"的证据。
+    """
+    mismatches = set(mismatch_warnings(warnings or []))
+    for msg in warnings or []:
+        yield ("规则不匹配" if msg in mismatches else "规则覆盖", msg)
 
 
 class DropZoneFrame(QFrame):
@@ -300,7 +313,9 @@ class Worker(QObject):
             path = self.job.kwargs["path"]
             rules = self.job.kwargs["rules"]
             self.progress.emit(10, "正在解析文档结构...")
-            errors, domain, _rd = self.backend.gui_validate(path, rules)
+            errors, domain, _rd, warnings = self.backend.gui_validate(path, rules)
+            for tag, msg in _coverage_advisories(warnings):
+                self.log.emit(f"[{tag}] {msg}", "warn")
             self.progress.emit(90, "生成校验报告...")
             # 保存 CSV
             stem = os.path.splitext(os.path.basename(path))[0]
@@ -312,7 +327,8 @@ class Worker(QObject):
             self.progress.emit(100, "校验完成 ✓")
             self.result.emit(
                 "validate",
-                {"errors": errors, "domain": domain, "csv_path": csv_path, "source": path},
+                {"errors": errors, "domain": domain, "csv_path": csv_path,
+                 "source": path, "warnings": warnings},
             )
 
         elif self.job.kind == "validate-dir":
@@ -328,8 +344,13 @@ class Worker(QObject):
                 self.progress.emit(int((i / max(total, 1)) * 90),
                                    f"[{i}/{total}] 校验 {os.path.basename(f)}")
                 try:
-                    errors, domain, _rd = self.backend.gui_validate(f, rules)
+                    errors, domain, _rd, warnings = self.backend.gui_validate(f, rules)
                     all_results.append((f, errors, domain))
+                    # 0 错误但规则没挂上文档时必须在日志里说清楚，否则整批
+                    # 会被误读成全部合规。
+                    for tag, msg in _coverage_advisories(warnings):
+                        self.log.emit(
+                            f"[{tag}] {os.path.basename(f)}: {msg}", "warn")
                 except Exception as exc:
                     self.log.emit(f"[skip] {os.path.basename(f)}: {exc}", "warn")
             reporter = Reporter()
@@ -386,6 +407,8 @@ class Worker(QObject):
             errors, domain, repaired, out_path = self.backend.gui_check_fix(
                 path, rules, preset, overrides
             )
+            for tag, msg in _coverage_advisories(self.backend.last_warnings):
+                self.log.emit(f"[{tag}] {msg}", "warn")
             self.progress.emit(100,
                                f"修复完成：{repaired} 处修复 → {out_path or '（非 DOCX 跳过修复）'}")
             self.result.emit(

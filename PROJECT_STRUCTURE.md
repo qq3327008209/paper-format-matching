@@ -1,6 +1,6 @@
 # 文档格式校验与排版引擎 —— 功能结构总览
 
-> 版本：engine 4.4.0 | 代码规模：54 个 Python 文件，约 11,142 行 | 测试：11 个测试文件，143 个单元测试用例
+> 版本：engine 4.4.0 | 代码规模：56 个 Python 文件，约 12,085 行 | 测试：13 个测试文件，194 个单元测试用例
 
 ---
 
@@ -94,7 +94,7 @@ CLI 基于 prompt_toolkit 实现，程序启动后自动创建 `input/` 与 `out
 
 ## 八、测试体系（tests 目录）
 
-项目的自动化测试采用 pytest 框架组织为 11 个测试文件共 143 个用例，核心覆盖规则引擎的关键计算能力。`test_rule_engine.py` 是基础测试，验证各个 op（eq/in/range/count_min 等）的通过与失败分支。`test_rule_engine_actions.py` 验证规则条目附带的 `action/action_value` 修复指令能否正确传递到错误对象。`test_rule_engine_after_h1.py` 专门测试 `after_h1('标题') until next h1/end` 章节范围语法的边界情况，验证标题命中、范围跨越、超出边界后自动失效等关键分支。`test_rule_engine_order.py` 验证 `cross_ref_order` 引述顺序检查与 `sequence_consecutive` 编号连续性检查，覆盖了"先引后现"异常、跳号、重复编号等错误路径。`test_rule_engine_missing.py` 验证 `first_line_chars` 回退推算、纯中文段落 font_en_most 静默抑制等 missing 警告的智能逻辑。`test_match_parser_security.py` 则是沙箱安全的红线测试，构造了 `__import__('os')`、`eval()`、属性访问、列表推导式、lambda 等十几种恶意表达式，验证全部被白名单拒绝并返回布尔假，无一例执行成功。`test_format_engine.py`、`test_punctuation.py`、`test_heading_regex_dedup.py` 覆盖格式引擎的标点归一化、标题正则去重、格式化流水线等能力。`test_cli.py` 对 CLI 命令的参数解析器做了多组合覆盖，确保路径与标志位解析的鲁棒性。`test_annotator.py` 覆盖 Word 批注写入的完整链路，重点固定一条历史致命缺陷：`engine/annotator.py` 拼 XML 标签时漏写 Clark 记法花括号导致 `word/comments.xml` 不存在的文档必崩，故用"无现成批注的 docx"作为回归夹具；另含控制台编码加固测试，保证 GBK 控制台下状态消息不会抛 `UnicodeEncodeError`。
+项目的自动化测试采用 pytest 框架组织为 13 个测试文件共 194 个用例，核心覆盖规则引擎的关键计算能力。`test_rule_engine.py` 是基础测试，验证各个 op（eq/in/range/count_min 等）的通过与失败分支。`test_rule_engine_actions.py` 验证规则条目附带的 `action/action_value` 修复指令能否正确传递到错误对象。`test_rule_engine_after_h1.py` 专门测试 `after_h1('标题') until next h1/end` 章节范围语法的边界情况，验证标题命中、范围跨越、超出边界后自动失效等关键分支。`test_rule_engine_order.py` 验证 `cross_ref_order` 引述顺序检查与 `sequence_consecutive` 编号连续性检查，覆盖了"先引后现"异常、跳号、重复编号等错误路径。`test_rule_engine_missing.py` 验证 `first_line_chars` 回退推算、纯中文段落 font_en_most 静默抑制等 missing 警告的智能逻辑。`test_match_parser_security.py` 则是沙箱安全的红线测试，构造了 `__import__('os')`、`eval()`、属性访问、列表推导式、lambda 等十几种恶意表达式，验证全部被白名单拒绝并返回布尔假，无一例执行成功。`test_format_engine.py`、`test_punctuation.py`、`test_heading_regex_dedup.py` 覆盖格式引擎的标点归一化、标题正则去重、格式化流水线等能力。`test_cli.py` 对 CLI 命令的参数解析器做了多组合覆盖，确保路径与标志位解析的鲁棒性。`test_annotator.py` 覆盖 Word 批注写入的完整链路，重点固定一条历史致命缺陷：`engine/annotator.py` 拼 XML 标签时漏写 Clark 记法花括号导致 `word/comments.xml` 不存在的文档必崩，故用"无现成批注的 docx"作为回归夹具；另含控制台编码加固测试，保证 GBK 控制台下状态消息不会抛 `UnicodeEncodeError`。`test_heading_depth.py` 覆盖标题层级识别，固定两类历史缺陷：`RE_HEADING_H3` 曾把 `1.` / `1.1` / `1.1.1` 一律判成三级标题、层级信息完全丢失，以及 `摘  要`、`参  考  文  献` 这类中间带全角空格的结构性标题曾被当成正文套上首行缩进；现由 `numeric_heading_level()` 按点分段数推导层级，`structural_heading_kind()` 按去空白文本识别结构性标题。`test_rule_engine_coverage.py` 固定规则覆盖诊断的口径：规则文件与文档不匹配（典型是 `else` 兜底段类吃光全部段落、却有一半规则一次都没执行）时必须显式告警，且这些告警是诊断而非判决——不进 `errors`、不参与修复与批注定位、不改错误对象结构，也不得替用户判定文档合规与否。
 
 ---
 
@@ -150,7 +150,7 @@ paper-format-matching/
 │   ├── api_config.yaml.example             # LLM API Key 配置模板
 │   └── schools/
 │       └── rules_湖北汽院_优秀小论文.yaml    # 湖北汽院专属：优秀小论文格式规则
-├── tests/                                  # pytest 单元测试（11 文件 / 143 用例）
+├── tests/                                  # pytest 单元测试（13 文件 / 194 用例）
 │   ├── fixtures/sample.docx                # 测试预置样本
 │   ├── test_rule_engine.py                 # 基础 op 测试
 │   ├── test_rule_engine_actions.py         # 修复动作传递测试
@@ -162,7 +162,9 @@ paper-format-matching/
 │   ├── test_punctuation.py                 # 标点/符号归一化测试
 │   ├── test_heading_regex_dedup.py         # 标题正则去重测试
 │   ├── test_cli.py                         # CLI 参数解析测试
-│   └── test_annotator.py                   # Word 批注写入回归测试（含 GBK 控制台编码加固）
+│   ├── test_annotator.py                   # Word 批注写入回归测试（含 GBK 控制台编码加固）
+│   ├── test_heading_depth.py               # 数字编号标题层级 + 结构性标题识别测试
+│   └── test_rule_engine_coverage.py      # 规则覆盖诊断测试（诊断不等于判决）
 ├── ui/                                     # REPL 界面辅助
 │   ├── printers.py                         # 终端彩色输出（表格、步骤、欢迎横幅）
 │   └── input.py                            # prompt_toolkit 输入会话构建

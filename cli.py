@@ -16,6 +16,7 @@ import sys
 
 from engine import get_extractor, RuleEngine, Reporter, annotate_document
 from engine import annotator as _annotator
+from engine.rule_engine import mismatch_warnings
 from engine.paths import resolve, ensure_parent, BASE_DIR
 from format import FormatEngine, Config, PRESETS
 from prompt_toolkit.formatted_text import HTML
@@ -115,6 +116,7 @@ class CLI:
         self.rules_path = resolve("config", "rules_lunwen.yaml")
         self.last_errors = []
         self.last_file = None
+        self.last_warnings = []
         self.session = None  # 延迟到 run() 创建，避免非交互环境报错
         # 启动时确保 input/ output/ 工作目录存在
         _ensure_work_dirs()
@@ -263,7 +265,10 @@ class CLI:
     # Shared helpers
     # ------------------------------------------------------------------
     def _validate_file(self, file_path, rules_path, *, record_state: bool = True):
-        """Validate one file. Returns (errors, domain, rules_data).
+        """Validate one file. Returns (errors, domain, rules_data, warnings).
+
+        ``warnings`` 是规则覆盖诊断（``RuleEngine.coverage_warnings``）——
+        规则文件与文档不匹配时用它提示，否则 "0 条错误" 会被误读成合规。
 
         ``record_state=False`` 时不写入 ``self.last_errors / last_file``，
         给 /test 这类"分步走校验和修复"避免半路被覆盖。
@@ -273,10 +278,27 @@ class CLI:
         engine = RuleEngine(doc_data, rules_path=rules_path)
         errors = engine.validate()
         domain = engine.rules_data.get("domain", "")
+        warnings = engine.coverage_warnings()
         if record_state:
             self.last_errors = errors
             self.last_file = file_path
-        return errors, domain, engine.rules_data
+            self.last_warnings = warnings
+        return errors, domain, engine.rules_data, warnings
+
+    def _print_coverage_warnings(self, warnings=None) -> None:
+        """Print rule-coverage advisories if any.
+
+        单独用 print_warn 而不是混进错误列表：这些是"规则没挂上文档"的诊断，
+        不是格式违规。不提示的话，规则错配会静默输出 0 条错误，用户误以为合规。
+
+        前缀区分两类：错配判据（这份规则文件可能不适用于本文档）vs 纯信息
+        （哪些规则在本次校验中一次都没执行过）。
+        """
+        msgs = warnings if warnings is not None else self.last_warnings
+        mismatches = set(mismatch_warnings(msgs))
+        for msg in msgs:
+            label = "规则不匹配" if msg in mismatches else "规则覆盖"
+            ui.print_warn(f"{label}: {msg}")
 
     @staticmethod
     def _segment_font_size(segment, config):
@@ -331,7 +353,7 @@ class CLI:
         Returns (errors, domain, repaired_count, out_path).
         ``out_path`` is None when the file cannot be repaired in place.
         """
-        errors, domain, _rules_data = self._validate_file(file_path, rules_path)
+        errors, domain, _rules_data, _warnings = self._validate_file(file_path, rules_path)
         if not file_path.lower().endswith(".docx"):
             return errors, domain, 0, None
 
@@ -426,10 +448,11 @@ class CLI:
         path = _resolve_input_path(path)
         rules_path = flags.get("rules", self.rules_path)
         ui.print_info("校验中...")
-        errors, domain, _rules_data = self._validate_file(path, rules_path)
+        errors, domain, _rules_data, _warnings = self._validate_file(path, rules_path)
         self.last_errors = errors
         self.last_file = path
         ui.print_check_result(errors, path, domain)
+        self._print_coverage_warnings()
         reporter = Reporter()
         stem = os.path.splitext(os.path.basename(path))[0]
         csv_path = reporter.to_timestamped_path(
@@ -455,16 +478,29 @@ class CLI:
         reporter = Reporter()
         all_results = []
         total_errors = 0
+        cov_hits: list[str] = []
         for i, f in enumerate(files, 1):
             try:
-                errors, domain, _rd = self._validate_file(f, rules_path)
+                errors, domain, _rd, warnings = self._validate_file(f, rules_path)
                 all_results.append((f, errors))
                 total_errors += len(errors)
                 self.last_errors = errors
                 self.last_file = f
+                self.last_warnings = warnings
+                # 只有错配判据才值得单列成"规则可能不匹配"；死规则 / 未匹配
+                # 段类是纯信息，不能反过来把合规的文档标成不匹配。
+                if mismatch_warnings(warnings):
+                    cov_hits.append(
+                        f"{os.path.basename(f)}：{'；'.join(mismatch_warnings(warnings))}"
+                    )
+                if errors:
+                    status, detail = "warn", f"{len(errors)} 处问题"
+                elif mismatch_warnings(warnings):
+                    status, detail = "warn", "规则可能不匹配，详见下方"
+                else:
+                    status, detail = "ok", "通过"
                 ui.print_batch_progress(i, len(files), os.path.basename(f),
-                                        "warn" if errors else "ok",
-                                        f"{len(errors)} 处问题" if errors else "通过")
+                                        status, detail)
             except Exception as exc:
                 ui.print_batch_progress(i, len(files), os.path.basename(f), "fail", f"校验失败: {exc}")
         combined_path = reporter.to_timestamped_path(
@@ -473,6 +509,13 @@ class CLI:
         ensure_parent(combined_path)
         reporter.save_batch_csv(all_results, combined_path)
         ui.print_batch_summary(len(files), total_errors, combined_path)
+        if cov_hits:
+            ui.print_warn(
+                f"其中 {len(cov_hits)} 个文件的规则文件可能不适用于该文档，"
+                "错误数不可作为合规依据："
+            )
+            for hit in cov_hits:
+                ui.print_warn(f"  - {hit}")
 
     def cmd_format(self, args):
         """排版单个文件。"""
@@ -525,6 +568,7 @@ class CLI:
             path, rules_path, config
         )
         ui.print_check_result(errors, path, domain)
+        self._print_coverage_warnings()
         if out_path:
             ui.print_good(f"修复完成: 共应用 {repaired} 处修复，已保存到 {out_path}")
         else:
@@ -545,11 +589,16 @@ class CLI:
             return
         ui.print_info(f"共发现 {len(files)} 个文件，开始批量校验修复...")
         out_dir = _resolve_output_path()
+        cov_hits: list[str] = []
         for i, f in enumerate(files, 1):
             try:
                 _errors, _domain, repaired, out_path = self._check_fix_core(
                     f, rules_path, config
                 )
+                if self.last_warnings:
+                    cov_hits.append(
+                        f"{os.path.basename(f)}：{'；'.join(self.last_warnings)}"
+                    )
                 if out_path:
                     ui.print_batch_progress(i, len(files), os.path.basename(f), "ok",
                                             f"修复完成 ({repaired} 处)")
@@ -558,6 +607,12 @@ class CLI:
             except Exception as exc:
                 ui.print_batch_progress(i, len(files), os.path.basename(f), "fail", f"修复失败: {exc}")
         ui.print_good(f"批量校验修复完成。产物在 {out_dir}")
+        if cov_hits:
+            ui.print_warn(
+                f"其中 {len(cov_hits)} 个文件的规则可能不匹配，修复结果请人工复核："
+            )
+            for hit in cov_hits:
+                ui.print_warn(f"  - {hit}")
 
     def cmd_annotate(self, args):
         """标注上次校验结果。"""
@@ -625,7 +680,13 @@ class CLI:
         results = []
 
         def step(name, ok, detail=""):
-            results.append(ok)
+            """记录一步结果。
+
+            ``ok is None`` 表示预期跳过：不算通过也不算失败，且不进入分母。
+            之前这里把"无锚点可批注"也当成功打 ✓，导致 /test 的批注一步空转。
+            """
+            if ok is not None:
+                results.append(ok)
             ui.print_test_step(name, ok, detail)
 
         # 2. 校验 /check
@@ -637,8 +698,9 @@ class CLI:
             if candidates:
                 rules_path = candidates[0]
         try:
-            errors, domain, _rd = self._validate_file(sample_path, rules_path)
+            errors, domain, _rd, _warns = self._validate_file(sample_path, rules_path)
             step("校验 /check", True, f"{len(errors)} 处问题, 领域={domain or 'N/A'}")
+            self._print_coverage_warnings(_warns)
         except Exception as exc:
             step("校验 /check", False, str(exc))
 
@@ -656,7 +718,7 @@ class CLI:
         #    复用刚才校验的 results 走修复分支，不再触发第二次 validate（否则
         #    会覆盖 last_file / last_errors）。
         try:
-            errors, _domain, _rd = self._validate_file(sample_path, rules_path)
+            errors, _domain, _rd, _warns = self._validate_file(sample_path, rules_path)
             repaired = self._apply_repairs(sample_path, fixed_path, errors)
             ok_fix = os.path.exists(fixed_path)
             step("校验修复 /check-fix", ok_fix,
@@ -666,12 +728,23 @@ class CLI:
 
         # 5. 批注 /annotate（基于 step2 的校验结果，产物落 examples/）
         try:
-            if self.last_errors and self.last_file:
-                ok_anno = annotate_document(self.last_file, anno_path, self.last_errors)
-                step("批注 /annotate", ok_anno,
-                     anno_path if ok_anno else f"未生成: {_annotator.LAST_ERROR}")
-            else:
+            if not (self.last_errors and self.last_file):
                 step("批注 /annotate", False, "无上次校验结果")
+            else:
+                annotatable = _annotator.count_annotatable(self.last_errors)
+                if annotatable == 0:
+                    # 全部是结构级错误（paragraph_index 为 None），批注没有
+                    # 段落可锚定。annotate_document 仍会返回 True 并输出一个
+                    # 与输入几乎相同的副本，这里必须显示为跳过而不是成功。
+                    step("批注 /annotate", None,
+                         f"跳过：{len(self.last_errors)} 条错误均为结构级、"
+                         "无段落锚点，无可写入的批注")
+                else:
+                    ok_anno = annotate_document(
+                        self.last_file, anno_path, self.last_errors)
+                    step("批注 /annotate", ok_anno,
+                         f"{anno_path}（{annotatable} 条批注）" if ok_anno
+                         else f"未生成: {_annotator.LAST_ERROR}")
         except Exception as exc:
             step("批注 /annotate", False, str(exc))
 

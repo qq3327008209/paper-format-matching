@@ -23,8 +23,9 @@ from format.ops.heading import (
     RE_H2_INLINE_TITLE,
     RE_HEADING_H1,
     RE_HEADING_H2,
-    RE_HEADING_H3,
     RE_HEADING_H4,
+    numeric_heading_level,
+    structural_heading_kind,
 )
 from format.ops.paragraph import ParagraphOp
 from format.ops.paragraph_formatter import (
@@ -104,6 +105,11 @@ class ParagraphClassifier:
         leading_space_count = len(original_text) - len(text_to_check)
         para_text_preview = text_to_check[:30].replace("\n", " ")
 
+        # 结构性标题（摘要/ABSTRACT/参考文献/致谢...）按去空白后的文本匹配；
+        # 数字编号标题的层级由点分段数推导。
+        struct_kind = structural_heading_kind(text_to_check)
+        numeric_level = numeric_heading_level(text_to_check)
+
         # Base line spacing for the paragraph
         spacing = para._p.get_or_add_pPr().get_or_add_spacing()
         spacing.set(qn('w:beforeAutospacing'), '0')
@@ -119,28 +125,16 @@ class ParagraphClassifier:
         if is_pic or is_embedded_obj:
             log_msg = "图片" if is_pic else "嵌入对象"
             self._log(f"段落: {log_msg} - 仅格式化文字")
-            if RE_HEADING_H1.match(text_to_check):
+            if RE_HEADING_H1.match(text_to_check) or struct_kind == "h1":
                 self._log(f"  > 文字识别为一级标题: \"{para_text_preview}...\"")
                 apply_font_to_runs(
                     para, h1_font, h1_size, self._font_op, self.config,
                     set_color=apply_color,
                 )
-            elif RE_HEADING_H2.match(text_to_check):
+            elif RE_HEADING_H2.match(text_to_check) or numeric_level == 2:
                 self._log(f"  > 文字识别为二级标题: \"{para_text_preview}...\"")
                 apply_font_to_runs(
                     para, h2_font, h2_size, self._font_op, self.config,
-                    set_color=apply_color,
-                )
-            elif RE_HEADING_H3.match(text_to_check):
-                self._log(f"  > 文字识别为三级标题: \"{para_text_preview}...\"")
-                apply_font_to_runs(
-                    para, body_font, body_size, self._font_op, self.config,
-                    set_color=apply_color,
-                )
-            elif RE_HEADING_H4.match(text_to_check):
-                self._log(f"  > 文字识别为四级标题: \"{para_text_preview}...\"")
-                apply_font_to_runs(
-                    para, body_font, body_size, self._font_op, self.config,
                     set_color=apply_color,
                 )
             elif text_to_check:
@@ -280,12 +274,50 @@ class ParagraphClassifier:
                 apply_text_indent_and_align(para, self.config)
                 reset_pagination_properties(para)
 
-        elif RE_HEADING_H3.match(text_to_check):
-            self._log(f"段落: 三级标题 - \"{para_text_preview}...\"")
+        elif struct_kind == "keywords":
+            # 关键词行："关键词：xxx"，无首行缩进、左对齐。
+            self._log(f"段落: 关键词行 - \"{para_text_preview}...\"")
             strip_leading_whitespace(para, self._logger)
-            format_heading(para, 3, self.config, self._logger)
+            format_heading(para, 2, self.config, self._logger)
             apply_font_to_runs(
-                para, body_font, body_size, self._font_op, self.config,
+                para, h2_font, h2_size, self._font_op, self.config,
+                set_color=apply_color,
+            )
+            para.paragraph_format.first_line_indent = None
+            ind = para._p.get_or_add_pPr().get_or_add_ind()
+            ind.attrib.pop(qn("w:firstLine"), None)
+            ind.attrib.pop(qn("w:firstLineChars"), None)
+            para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            reset_pagination_properties(para)
+
+        elif struct_kind == "h1":
+            # 摘要 / ABSTRACT / 参考文献 / 致谢 / 附录 / 目录 / 结论
+            self._log(f"段落: 结构性标题 - \"{para_text_preview}...\"")
+            strip_leading_whitespace(para, self._logger)
+            format_heading(para, 1, self.config, self._logger)
+            apply_font_to_runs(
+                para, h1_font, h1_size, self._font_op, self.config,
+                set_color=apply_color,
+            )
+            apply_text_indent_and_align(para, self.config)
+            reset_pagination_properties(para)
+
+        elif numeric_level:
+            # 数字编号标题：1. → Lv1，1.1 → Lv2，1.1.1 → Lv3，1.1.1.1 → Lv4
+            if numeric_level == 1:
+                h_font, h_size = h1_font, h1_size
+            elif numeric_level == 2:
+                h_font, h_size = h2_font, h2_size
+            else:
+                h_font, h_size = body_font, body_size
+            self._log(
+                f"段落: 数字编号标题 Lv{numeric_level} - "
+                f"\"{para_text_preview}...\""
+            )
+            strip_leading_whitespace(para, self._logger)
+            format_heading(para, numeric_level, self.config, self._logger)
+            apply_font_to_runs(
+                para, h_font, h_size, self._font_op, self.config,
                 set_color=apply_color,
             )
             apply_text_indent_and_align(para, self.config)

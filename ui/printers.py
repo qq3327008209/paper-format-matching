@@ -194,11 +194,20 @@ def print_batch_summary(total_files, total_errors, report_path):
 
 
 def print_test_step(name, ok, detail=""):
-    """自检单步结果。"""
-    if ok:
-        console.print(f"  [green]✓[/green] {name}" + (f"  [dim]— {detail}[/dim]" if detail else ""))
+    """自检单步结果。
+
+    ``ok`` 三态：``True`` 通过、``False`` 失败、``None`` 预期跳过
+    （例如样例文档没有可锚定批注的段落）。跳过既不算通过也不算失败，
+    由调用方决定是否计入分母——不得把它当成功，否则自检结论失真。
+    """
+    if ok is True:
+        mark = "  [green]✓[/green]"
+    elif ok is False:
+        mark = "  [red]✗[/red]"
     else:
-        console.print(f"  [red]✗[/red] {name}" + (f"  [dim]— {detail}[/dim]" if detail else ""))
+        mark = "  [yellow]-[/yellow]"
+    suffix = f"  [dim]— {detail}[/dim]" if detail else ""
+    console.print(f"{mark} {name}" + suffix)
 
 
 def print_test_summary(passed, total, ex_dir):

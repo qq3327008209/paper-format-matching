@@ -79,7 +79,7 @@ paper-format-matching/
 │   ├── sample_formatted.docx       # /test 跑出：格式化产物
 │   ├── sample_fixed.docx           # /test 跑出：修复产物
 │   └── sample_annotated.docx       # /test 跑出：批注产物
-├── tests/                          # 测试（143 个）
+├── tests/                          # 测试（194 个）
 │   ├── test_rule_engine_*.py       # 规则引擎单元测试
 │   ├── test_punctuation.py         # 标点规范化测试
 │   ├── test_heading_regex_dedup.py # 正则常量同源测试
@@ -322,7 +322,7 @@ v2 新增 5 个（需 `schema: contract-v2`，见 [config/schema.md](config/sche
 ## 🧪 测试
 
 ```bash
-# 全部跑（143 个用例，约 0.9s）
+# 全部跑（194 个用例，约 2.0s）
 python -m pytest tests/ -q
 
 # 单独跑某一组

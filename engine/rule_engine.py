@@ -274,6 +274,7 @@ class RuleEngine:
             self.rules_data = {"segments": [], "rules": [], "skip_files": []}
         self.errors: list[dict] = []
         self._segment_labels: list[Optional[str]] = []
+        self.coverage: dict = {}
 
     @staticmethod
     def _load_rules(rules_path: str) -> dict:
@@ -408,7 +409,115 @@ class RuleEngine:
                     "location": f"Rule: {rule}",
                     "paragraph_index": None,
                 })
+        self.coverage = self._build_coverage(paragraphs, labels, segment_to_indices)
         return self.errors
+
+    def _build_coverage(self, paragraphs: list, labels: list,
+                        segment_to_indices: dict) -> dict:
+        """Measure how well the rule file attached to this document.
+
+        Empty paragraphs never match any segment (``_classify_paragraphs`` only
+        labels paragraphs with text), so coverage is measured over non-empty
+        paragraphs only.  This is domain-agnostic: it measures attachment
+        quality, never whether the document is compliant.
+        """
+        segments = self.rules_data.get("segments", [])
+        rules = self.rules_data.get("rules", [])
+        matched = {sid: len(ids) for sid, ids in segment_to_indices.items()}
+        declared = [s.get("id") for s in segments if s.get("id")]
+        unmatched_segments = [sid for sid in declared if not matched.get(sid)]
+        dead_rules = [
+            r for r in rules
+            if r.get("segment") and not matched.get(r.get("segment"))
+        ]
+        # 点名死规则挂的段类，写规则的人才能据此定位到具体哪条 match 失效。
+        dead_rule_segments = sorted({r.get("segment") for r in dead_rules})
+
+        text_total = 0
+        unlabeled = 0
+        for i, para in enumerate(paragraphs):
+            if not (para.get("text") or "").strip():
+                continue
+            text_total += 1
+            if labels[i] is None:
+                unlabeled += 1
+        return {
+            "total_paragraphs": len(paragraphs),
+            "text_paragraphs": text_total,
+            "unlabeled_paragraphs": unlabeled,
+            "segment_match_counts": matched,
+            "unmatched_segments": unmatched_segments,
+            "dead_rules": len(dead_rules),
+            "dead_rule_segments": dead_rule_segments,
+            "total_rules": len(rules),
+        }
+
+    def coverage_warnings(self) -> list:
+        """Return human-readable advisories about rule-file attachment quality.
+
+        These are advisories, never errors: a mismatched rule file must not
+        masquerade as either a compliant document (0 errors) or a document full
+        of violations (hundreds of false positives).  An empty list means no
+        attachment problem was detected, not that every rule ran.
+
+        Thresholds are about attachment, not compliance: if more than half the
+        document's paragraphs fall outside every declared segment, the rule file
+        is almost certainly aimed at a different document shape.
+
+        Rule files with an ``else`` fallback segment absorb every non-empty
+        paragraph, so unlabelled-paragraph counts stay at zero and say nothing
+        about attachment.  In that case the dead segments and dead rules are the
+        real signal, and are always reported regardless of error count.
+        """
+        cov = self.coverage
+        warnings: list[str] = []
+        if not cov:
+            return warnings
+        text_total = cov.get("text_paragraphs", 0)
+        if not text_total:
+            return warnings
+        unlabeled = cov.get("unlabeled_paragraphs", 0)
+        real_errors = [e for e in self.errors if e.get("type") != "missing"]
+
+        if unlabeled == text_total:
+            warnings.append(
+                f"规则未命中任何段落（0/{text_total} 段被归类）：这份规则文件很可能"
+                "与本文档不匹配，0 条错误不代表格式合规"
+            )
+        elif not real_errors and unlabeled * 2 >= text_total:
+            warnings.append(
+                f"规则覆盖率过低：仅 {text_total - unlabeled}/{text_total} 段被归类，"
+                "0 条错误不代表格式合规，请确认规则文件与本文档匹配"
+            )
+        elif not real_errors and unlabeled:
+            warnings.append(
+                f"未发现格式错误，但有 {unlabeled}/{text_total} 段未被任何段类覆盖；"
+                "若规则本应覆盖全文，请检查规则文件"
+            )
+
+        # 0 覆盖时"哪些段类没匹配上"已被上面的总覆盖率告警包含，不重复点名。
+        if cov.get("unmatched_segments") and unlabeled != text_total:
+            warnings.append(
+                "以下段类在本文中未匹配到任何段落："
+                f"{'、'.join(cov['unmatched_segments'])}"
+            )
+        if cov.get("dead_rules"):
+            # 已声明但没匹配上的段类在上面已经点过名，这里只补充"根本没声明过"
+            # 的那种——那属于规则文件自身写错了 segment id。
+            unmatched_set = set(cov.get("unmatched_segments") or [])
+            ghost_ids = [
+                s for s in (cov.get("dead_rule_segments") or [])
+                if s not in unmatched_set
+            ]
+            detail = (
+                "，其中 " + "、".join(str(s) for s in ghost_ids) + " 未在 segments 中声明"
+                if ghost_ids else ""
+            )
+            warnings.append(
+                f"{cov['dead_rules']}/{cov['total_rules']} 条规则的目标段落不存在"
+                f"{detail}，已按未匹配跳过"
+            )
+        return warnings
 
     # -- op dispatch table --
     # Each handler receives (rule, indices, paragraphs, labels) and is
@@ -1204,3 +1313,24 @@ class RuleEngine:
                 "paragraph_index": None,
                 "segment": seg_id,
             })
+
+# ---------------------------------------------------------------------------
+# Advisory classification
+# ---------------------------------------------------------------------------
+
+# 覆盖率告警里真正指向"规则文件与文档不匹配"的关键词。
+#
+# 死规则 / 未匹配段类只是信息（一份写得好的规则也可能声明了本文档不存在的
+# 段类，比如"目录""页眉页脚"），不能拿来对合规性下结论；只有 0 覆盖和低覆盖
+# 两条告警才构成"这份规则根本没挂上这份文档"的判据。
+_MISMATCH_MARKERS = ("不匹配", "覆盖率过低")
+
+
+def mismatch_warnings(warnings):
+    """Return the coverage advisories that imply a rules/document mismatch.
+
+    Used by the CLI and GUI to decide whether a clean result may be reported as
+    "通过".  Rule-file advisories about never-run rules are deliberately
+    excluded: they are actionable facts, not a verdict on the document.
+    """
+    return [w for w in (warnings or []) if any(m in w for m in _MISMATCH_MARKERS)]

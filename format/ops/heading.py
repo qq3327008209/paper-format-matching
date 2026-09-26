@@ -29,6 +29,74 @@ RE_HEADING_H2 = re.compile(r"^[（\(][一二三四五六七八九十百千万零
 RE_HEADING_H3 = re.compile(r"^\d+\s*[\.．]")
 RE_HEADING_H4 = re.compile(r"^[（\(]\d+[）\)]")
 
+# Numeric hierarchy: "1." -> Lv1, "1.1" -> Lv2, "1.1.1" -> Lv3.
+#
+# RE_HEADING_H3 (^\d+\s*[\.．]) matched ALL of these and mapped them all to
+# Lv3, so "1.1" and "1.1.1" came out at the same level as "1.". Depth is
+# derived from the dot-separated segment count instead. First segment is
+# capped at 2 digits so dates/versions like "2024.5" are not headings.
+RE_HEADING_NUMERIC = re.compile(r"^(\d{1,2}(?:[\.．]\d{1,2})+)(?:\s*[^\d\.．]|$)")
+RE_HEADING_NUM_SINGLE = re.compile(r"^(\d{1,2})[\.．]\s*\S")
+
+# Structural section markers. Matched against whitespace-stripped text because
+# documents pad these with ideographic spaces for visual spacing ("摘  要",
+# "参  考  文  献") which defeated the heading regexes and left them formatted
+# as indented body text.
+RE_STRUCTURAL_HEADING = re.compile(
+    r"^(摘要|abstract|参考文献|references|bibliography|"
+    r"致谢|acknowledgements?|附录|appendix|目录|contents|结论)\s*[：:.．]?\s*(.*)$"
+)
+
+# 关键词行：标签后必须带内容，所以单独匹配（不能复用 RE_STRUCTURAL_HEADING 的
+# "无后续内容才算标题"约束）。
+RE_KEYWORDS_LINE = re.compile(r"^(关键词|keywords)\s*[：:]?\s*(.*)$")
+
+# Cap for heading-length guards: longer text is prose that merely starts with
+# a number, not a heading.
+MAX_HEADING_LEN = 60
+
+
+def strip_all_whitespace(text):
+    """Remove every whitespace char including full-width ideographic space."""
+    return re.sub(r"[\s　 ]+", "", text or "")
+
+
+def numeric_heading_level(text):
+    """Return outline depth 1-4 for a numeric heading, else ``None``.
+
+    ``"1.1.1 背景"`` -> 3, ``"1.1 背景"`` -> 2, ``"1. 数据来源"`` -> 1.
+    Depth is the number of dot-separated segments, capped at 4.
+    """
+    if not text or len(text.strip()) > MAX_HEADING_LEN:
+        return None
+    probe = text.lstrip()
+    m = RE_HEADING_NUMERIC.match(probe)
+    if m:
+        segments = m.group(1).count(".") + m.group(1).count("．") + 1
+        return min(max(segments, 1), 4)
+    if RE_HEADING_NUM_SINGLE.match(probe):
+        return 1
+    return None
+
+
+def structural_heading_kind(text):
+    """Return ``'h1'`` / ``'keywords'`` if ``text`` is a structural marker.
+
+    Whitespace-insensitive.  ``'参考文献[1]张三'`` is a reference entry and
+    returns ``None``: a marker followed by content is not the section heading.
+    """
+    if not text:
+        return None
+    norm = strip_all_whitespace(text).lower()
+    if not norm or len(norm) > 30:
+        return None
+    if RE_KEYWORDS_LINE.match(norm):
+        return "keywords"
+    m = RE_STRUCTURAL_HEADING.match(norm)
+    if not m or m.group(2).strip():
+        return None
+    return "h1"
+
 # Attachment marker.
 RE_ATTACHMENT = re.compile(r"^附件\s*(\d+|[一二三四五六七八九十百千万零]+)?\s*[:：]?$")
 
@@ -64,8 +132,9 @@ class HeadingOp:
 
         Returns:
             One of ``'title'``, ``'subtitle'``, ``'h1'``, ``'h2'``,
-            ``'h3'``, ``'h4'``, ``'body'``, ``'attachment'`` or ``None``
-            (``None`` for empty / whitespace-only text).
+            ``'h3'``, ``'h4'``, ``'keywords'``, ``'body'``,
+            ``'attachment'`` or ``None`` (``None`` for empty /
+            whitespace-only text).
         """
         if text is None:
             return None
@@ -77,15 +146,24 @@ class HeadingOp:
         if RE_ATTACHMENT.match(stripped):
             return "attachment"
 
-        # Heading levels (with length guards borrowed from formatter.py for
-        # the numeric heading variants to avoid grabbing dates / versions).
         if RE_HEADING_H1.match(stripped):
             return "h1"
         if RE_HEADING_H2.match(stripped):
             return "h2"
-        if RE_HEADING_H3.match(stripped) and len(stripped) < 60:
-            return "h3"
-        if RE_HEADING_H4.match(stripped) and len(stripped) < 60:
+
+        struct = structural_heading_kind(stripped)
+        if struct == "h1":
+            return "h1"
+        if struct == "keywords":
+            return "keywords"
+
+        # Numeric hierarchy: depth comes from the dot-segment count, so
+        # "1." / "1.1" / "1.1.1" land on h1 / h2 / h3 instead of all h3.
+        depth = numeric_heading_level(stripped)
+        if depth is not None:
+            return f"h{depth}"
+
+        if RE_HEADING_H4.match(stripped) and len(stripped) < MAX_HEADING_LEN:
             return "h4"
 
         style_lower = str(style or "").lower()
