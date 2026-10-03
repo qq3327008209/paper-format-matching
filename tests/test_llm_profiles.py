@@ -10,6 +10,7 @@
 """
 import os
 import sys
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -405,3 +406,73 @@ class TestConsumers:
         client = LLMClient()
         gen = RuleGenerator(client)
         assert gen.llm is client
+
+
+# ---------------------------------------------------------------------------
+# 非标准响应防御
+# ---------------------------------------------------------------------------
+
+class TestExtractContent:
+    """openai SDK 会把不合规的服务端响应原样交给调用方，不会替我们抛错。
+
+    回归背景：实测 openai 3.24.0 下，服务端返回一个裸 JSON 字符串（如
+    ``"ok"``）时 ``create()`` 直接返回 ``str``，随后取 ``.choices`` 报
+    ``'str' object has no attribute 'choices'``，用户看不出是接口配错。
+    """
+
+    def test_standard_chat_completion(self):
+        resp = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+        assert LLMClient._extract_content(resp) == "ok"
+
+    def test_bare_string_body_points_at_the_endpoint(self):
+        with pytest.raises(RuntimeError) as excinfo:
+            LLMClient._extract_content("ok")
+        message = str(excinfo.value)
+        assert "chat.completion" in message
+        assert "base_url" in message
+        # 拿到的是 str，报错里要说出实际类型，而不是 AttributeError
+        assert "str" in message
+
+    def test_stream_iterator_is_named_as_stream(self):
+        class FakeStream:
+            def __next__(self):
+                raise StopIteration
+
+        with pytest.raises(RuntimeError, match="流式"):
+            LLMClient._extract_content(FakeStream())
+
+    def test_empty_choices(self):
+        with pytest.raises(RuntimeError, match="choices 为空"):
+            LLMClient._extract_content(SimpleNamespace(choices=[]))
+
+    def test_none_message(self):
+        with pytest.raises(RuntimeError, match="message 为空"):
+            LLMClient._extract_content(
+                SimpleNamespace(choices=[SimpleNamespace(message=None)]))
+
+    @pytest.mark.parametrize("content,expected", [
+        (None, ""),
+        ("文本", "文本"),
+        ([{"type": "text", "text": "甲"},
+          {"type": "text", "text": "乙"}], "甲乙"),
+        (1234, "1234"),
+    ])
+    def test_content_variants(self, content, expected):
+        resp = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+        assert LLMClient._extract_content(resp) == expected
+
+    def test_nonstandard_body_surfaces_instead_of_attributeerror(self):
+        """端到端：create() 返回 str 时，用户看到的是接口配错提示。"""
+        client = LLMClient(profile={"name": "X", "base_url": "u",
+                                    "api_key": "sk-x", "model": "m"})
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                return "ok"
+
+        client._client = SimpleNamespace(
+            chat=SimpleNamespace(completions=FakeCompletions()))
+        with pytest.raises(RuntimeError, match="chat.completion"):
+            client.chat("system", "user")

@@ -119,7 +119,8 @@ class LLMClient:
             The assistant's message content as a string.
 
         Raises:
-            RuntimeError: if not configured or the API call fails.
+            RuntimeError: if not configured, the API call fails, or the
+                endpoint did not return an OpenAI-shaped response.
         """
         if not self.is_configured():
             raise RuntimeError(
@@ -141,9 +142,9 @@ class LLMClient:
                 messages=messages,
                 temperature=temperature,
             )
-            return response.choices[0].message.content
         except Exception as exc:
             raise RuntimeError(f"LLM API call failed: {exc}") from exc
+        return self._extract_content(response)
 
     def chat(self, system_prompt, user_prompt, temperature=0.3):
         """Call the LLM API and return the response text.
@@ -164,6 +165,63 @@ class LLMClient:
             ],
             temperature,
         )
+
+    @staticmethod
+    def _extract_content(response) -> str:
+        """从 openai SDK 的返回值里取出助手文本。
+
+        不能直接 ``response.choices[0].message.content``：openai SDK 会把
+        **不合规的服务端响应**原样交给调用方，而不是替我们抛错。实测
+        openai 3.24.0 下，服务端返回一个裸 JSON 字符串（如 ``"ok"``）时
+        ``create()`` 直接返回 ``str``，紧接着取 ``.choices`` 就是
+        ``'str' object has no attribute 'choices'``——报错里完全看不出是接口
+        配错。两种常见变体也要兜：``stream=True`` 返回迭代器（同样没有
+        ``choices``），以及部分服务把 ``message.content`` 返成
+        ``[{"type": "text", "text": "..."}]`` 列表。
+
+        Args:
+            response: ``client.chat.completions.create()`` 的原始返回值。
+
+        Returns:
+            助手回复文本；``content`` 为空时返回空串。
+
+        Raises:
+            RuntimeError: 返回值不是 OpenAI 标准 ``chat.completion`` 结构时，
+                并附排查方向，让用户知道该改 base_url 还是换接口。
+        """
+        if not hasattr(response, "choices"):
+            shape = "流式(stream) 迭代器" if hasattr(response, "__next__") \
+                else type(response).__name__
+            raise RuntimeError(
+                f"LLM 接口没有返回 OpenAI 标准的 chat.completion 结构"
+                f"（实际是 {shape}）。常见原因：base_url 结尾少了 /v1 或"
+                "误带了 /chat/completions、model 名不是该服务支持的，"
+                "或该服务并非真正的 OpenAI 兼容接口。"
+            )
+        choices = response.choices
+        if not choices:
+            raise RuntimeError(
+                "LLM 接口返回的 choices 为空。可检查请求内容是否被该服务"
+                "的审核策略拦截。"
+            )
+        message = choices[0].message
+        if message is None:
+            raise RuntimeError("LLM 接口返回的 choices[0].message 为空")
+        content = getattr(message, "content", None)
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (list, tuple)):
+            # 部分服务把 content 返成 [{"type": "text", "text": "..."}]
+            parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    parts.append(str(part.get("text", "")))
+                else:
+                    parts.append(str(getattr(part, "text", "")))
+            return "".join(parts)
+        return str(content)
 
     def chat_messages(self, messages, temperature=0.5):
         """多轮对话：传入完整 messages 列表，返回助手回复文本。
