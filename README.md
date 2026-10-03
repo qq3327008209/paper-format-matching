@@ -1,11 +1,11 @@
 # 统一文档格式校验与排版系统
 
-![版本](https://img.shields.io/badge/version-4.5.0-blue)
+![版本](https://img.shields.io/badge/version-4.6.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
-![UI](https://img.shields.io/badge/UI-prompt__toolkit%20%2B%20rich-orange)
+![UI](https://img.shields.io/badge/UI-PySide6%20GUI%20%2B%20rich-orange)
 
-一个**领域无关**的文档格式校验与自动排版系统。校验引擎按 YAML 规则检查格式问题，格式化引擎按预设修复——**检查 → 报告 → 修复**闭环，所有操作在交互式 REPL 中完成。
+一个**领域无关**的文档格式校验与自动排版系统。校验引擎按 YAML 规则检查格式问题，格式化引擎按预设修复——**检查 → 报告 → 修复**闭环，操作在 PySide6 图形界面（主入口）或交互式 REPL 中完成。
 
 适用任何「有明确格式规范」的场景：毕业论文、公文、学术论文、法律文书、合同、标书……
 
@@ -86,14 +86,17 @@ paper-format-matching/
 │   ├── test_punctuation.py         # 标点规范化测试
 │   ├── test_heading_regex_dedup.py # 正则常量同源测试
 │   └── test_match_parser_security.py # YAML 表达式注入对抗测试
-├── ui.py                           # UI 层：prompt_toolkit 补全 + rich 渲染
-├── cli.py                          # 唯一入口：交互式 REPL
+├── ui/                             # UI 层：prompt_toolkit 补全 + rich 渲染
+├── cli.py                          # 遗留 REPL 入口，业务层被 gui.py 子类化复用
+├── gui.py                          # 主入口：PySide6 图形界面
 └── requirements.txt
 ```
 
-### v4.3 / v4.4 重构亮点
+### 版本亮点
 
-- **FormatEngine 拆分**：原 1363 行大类拆为 418 行薄门面 + 3 个职责模块（text_loader/symbol_normalizer/paragraph_formatter），公共 API 不变
+- **v4.6 打包入口改 `gui.py`**：发行版双击直接进图形界面；LLM 凭据升级为命名方案库（`llm_profiles.yaml`），GUI 设置页支持多方案新建/改名/删除/切换
+- **v4.5 规则覆盖诊断**：`validate()` 顺带产出 `coverage`，规则文件与文档错配时显式告警；标题层级按点分段数推导（`1.`→Lv1 / `1.1`→Lv2）
+- **v4.3 / v4.4 重构**：FormatEngine 由 1363 行大类拆为 418 行薄门面 + 3 个职责模块（text_loader/symbol_normalizer/paragraph_formatter），公共 API 不变
 - **校验→修复语义闭合**：error dict 携带 `action`/`action_value`，`range/count/order/exists` 等结构性 op 不触发修复
 - **AST 沙箱**：MatchParser 用 AST 白名单节点遍历替换 eval 黑名单，杜绝 YAML 注入
 - **缺失字段分级**：Reporter/UI 把 missing 类问题标记为「警告」而非「错误」
@@ -120,18 +123,27 @@ REPL 中输入 `/help` 查看所有命令：
 ╭───── paper-format-matching ─────╮
 │ 文档格式校验与排版系统          │
 │ 输入 /help 查看命令，/quit 退出 │
-╰───────────── v4.4 ──────────────╯
+╰───────────── v4.6 ──────────────╯
 > /help
 ```
 
 输入 `/` 立即弹出命令菜单，方向键选择、Tab 补全。
 
-### 3. 工作目录（input / output / examples）
+### 3. Windows 打包版
+
+推送 `v*` tag 触发 `.github/workflows/build.yml`，产出两个 **GUI 入口**的 Windows 包（`paper-format-matching.exe` 由 Nuitka 编译为原生 exe，另有 PyInstaller 实验版），Release 里附的是发行版。解压后是 **exe + `config/`**，双击 exe 直接打开图形界面：
+
+- 所有路径锚定在 **exe 所在目录**，不随当前工作目录变化——exe 放哪都行，只要把 `config/` 一并放在它旁边
+- 启动时会在 exe 同目录创建 `input/` `output/` `reports/` 工作目录，规则文件放 `config/` 后在界面里选择即可
+- LLM 方案（`llm_profiles.yaml`）与 GUI 偏好（`gui_settings.json`）也是首次使用后生成在 exe 同目录，不在安装包内
+- 打包入口是 `gui.py` 而非 `cli.py`：PyInstaller 走 `--windowed`、Nuitka 走 `--enable-plugin=pyside6` + `--windows-console-mode=disable`，所以不会有控制台窗口弹出来
+
+### 4. 工作目录（input / output / examples）
 
 首次启动会自动在 exe / 项目根同级创建工作目录。`examples/` 仓库自带。
 
 ```
-paper-format-matching/          ← exe 或 cli.py 所在目录
+paper-format-matching/          ← exe 或 gui.py 所在目录
 ├── config/                     ← YAML 规则文件、API 配置
 ├── examples/                   ← /test 自检产物缓存（自带预置样本）
 │   ├── sample_for_test.docx    # 预置种子（含故意错误）
@@ -155,7 +167,7 @@ paper-format-matching/          ← exe 或 cli.py 所在目录
 
 传**绝对路径**完全按原路径走，行为不受影响——上述默认只对裸文件名/相对路径生效。
 
-### 3. 常用命令
+### 5. 常用命令
 
 | 命令 | 说明 |
 |------|------|

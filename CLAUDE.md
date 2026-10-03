@@ -19,7 +19,7 @@ python -m pytest tests/test_rule_engine.py::test_xxx -q   # 单用例
 python -m pytest tests/ -q -k sequence                 # 按关键字筛选
 ```
 
-无 `pyproject.toml` / `pytest.ini` / lint 配置，也没有 makefile。打包只在 CI 上跑：推送 `v*` tag 触发 `.github/workflows/build.yml`（**仅 Windows**，先跑 pytest，再 PyInstaller + Nuitka 双产物）。本地复现 Nuitka 产物：`python -m nuitka --standalone --onefile --output-dir=dist cli.py`（参数见 workflow）。REPL 内 `/test` 跑 校验→格式化→修复→批注 端到端自检，产物落 `examples/`。
+无 `pyproject.toml` / `pytest.ini` / lint 配置，也没有 makefile。打包只在 CI 上跑：推送 `v*` tag 触发 `.github/workflows/build.yml`（**仅 Windows**，先跑 pytest，再 PyInstaller + Nuitka 双产物）。**打包入口是 `gui.py`，不是 `cli.py`**：PyInstaller 走 `--windowed`，Nuitka 走 `--enable-plugin=pyside6` + `--windows-console-mode=disable`——Qt 的运行时库与平台插件只能靠 pyside6 插件收集，漏了 exe 起不来；console 关掉后 `sys.stdout` 是 `None`，代码里所有打印路径都必须容忍 None。产物是 exe + `config/` 打成的 zip，`config/` 必须和 exe 同目录（规则文件的唯一来源）。本地复现 Nuitka 产物：`python -m nuitka --enable-plugin=pyside6 --standalone --onefile --output-dir=dist --windows-console-mode=disable gui.py`。REPL 内 `/test` 跑 校验→格式化→修复→批注 端到端自检，产物落 `examples/`。
 
 ## 架构
 
@@ -51,7 +51,7 @@ docx/doc/pdf → extractors/ (策略模式, get_extractor 按扩展名分发)
 
 ### 路径解析：不要用 `cwd`
 
-`engine/paths.py` 的 `BASE_DIR` 兼容 python 脚本 / Nuitka onefile / PyInstaller onefile 三种环境。关键陷阱：Nuitka onefile 里 `sys.executable` 指向 `%TMP%` 下解压出的子 exe（错的），必须用 `sys.argv[0]` + Windows API 双保险取原始 exe 路径。**所有相对路径都要经 `paths.py` 解析到"原始 exe/cli.py 所在目录"**，`config/` 是用户数据目录，绝不能落到临时目录。
+`engine/paths.py` 的 `BASE_DIR` 兼容 python 脚本 / Nuitka onefile / PyInstaller onefile 三种环境。关键陷阱：Nuitka onefile 里 `sys.executable` 指向 `%TMP%` 下解压出的子 exe（错的），必须用 `sys.argv[0]` + Windows API 双保险取原始 exe 路径。**所有相对路径都要经 `paths.py` 解析到"原始 exe（打包入口 gui.py）所在目录"**，`config/` 是用户数据目录，绝不能落到临时目录。
 
 REPL 的路径默认语义：裸文件名 / 相对路径 → 从 `input/` 读、产物落 `output/`（批注 `output/`、报告 `reports/`）；传绝对路径则完全按原路径走。新增命令需保持这一行为。
 
@@ -63,7 +63,7 @@ REPL 的路径默认语义：裸文件名 / 相对路径 → 从 `input/` 读、
 
 ## 版本与口径约定（已对齐，改文档时保持一致）
 
-- **单一版本源**：`engine/__init__.py` 的 `__version__`（当前 4.5.0）。REPL 横幅（`ui/printers.py`）与 GUI 三处版本标签（`gui.py` 经 `ENGINE_VERSION`）都从它读取，**不要在任何地方硬编码版本号**。
+- **单一版本源**：`engine/__init__.py` 的 `__version__`（当前 4.6.0）。REPL 横幅（`ui/printers.py`）与 GUI 三处版本标签（`gui.py` 经 `ENGINE_VERSION`）都从它读取，**不要在任何地方硬编码版本号**。
 - **op 口径**：15 个 = v1 基础 10（`eq`/`in`/`regex`/`range`/`count_min`/`count_max`/`exists`/`before`/`after`/`skip`）+ v2 新增 5（`sequence_consecutive`/`cross_ref_order`/`document_structure`/`page_margins`/`page_size`）。`schema.md` 里「v1 的 10 个 op」指兼容基线，不是总数。
 - **测试口径**：15 个测试文件、199 个 test 函数、参数化后 258 个用例。代码 42 个非测试 py / 约 10,676 行，含测试共 59 个 py / 约 13,483 行。
 - `tests/test_gui_llm_dialog.py` 是唯一需要 Qt 的测试文件：模块导入时把 `QT_QPA_PLATFORM` 设为 `offscreen`，并用 session 级 `QApplication` fixture；网络请求一律用 monkeypatch 桩替换 `LLMClient.test_connection`，**不要在测试里真打网络**。GUI 侧后台线程回主线程的回调统一用 `try/except RuntimeError` 兜住「控件已随窗口销毁」，不要依赖 `shiboken6` 判断存活（本项目用的 PySide6 版本没有 `isDeleted`/`isAlive`）。

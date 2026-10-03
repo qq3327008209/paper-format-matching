@@ -30,6 +30,7 @@ jobs:
         run: |
           pyinstaller `
             --onefile `
+            --windowed `
             --name paper-format-matching-pyinstaller `
             --distpath dist-pyinstaller `
             --collect-all prompt_toolkit `
@@ -38,7 +39,7 @@ jobs:
             --collect-all openai `
             --hidden-import win32com `
             --hidden-import pythoncom `
-            cli.py
+            gui.py
           New-Item -ItemType Directory -Force -Path dist-pyinstaller\package
           Copy-Item dist-pyinstaller\paper-format-matching-pyinstaller.exe dist-pyinstaller\package\
           Copy-Item -Recurse config dist-pyinstaller\package\config
@@ -57,7 +58,10 @@ jobs:
         run: |
           # --assume-yes-for-downloads: CI 非交互模式下自动同意下载 Dependency Walker
           # 以及其他 Nuitka 需要的工具
+          # --enable-plugin=pyside6: GUI 入口依赖 Qt，插件负责收集 Qt 动态库与插件
+          # --windows-console-mode=disable: GUI 程序不弹控制台窗口
           python -m nuitka `
+            --enable-plugin=pyside6 `
             --standalone `
             --onefile `
             --output-dir=dist `
@@ -73,10 +77,10 @@ jobs:
             --include-package=prompt_toolkit `
             --include-package=rich `
             --include-package-data=docx `
-            --windows-console-mode=force `
+            --windows-console-mode=disable `
             --assume-yes-for-downloads `
             --remove-output `
-            cli.py
+            gui.py
 
       - name: 打包 exe + config
         run: |

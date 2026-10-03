@@ -1,7 +1,9 @@
 """项目路径解析：兼容 python 脚本 / Nuitka onefile / PyInstaller onefile 三种运行环境。
 
-核心原则：所有相对路径基于「原始 exe / cli.py 所在目录」解析，
+核心原则：所有相对路径基于「原始 exe / gui.py 所在目录」解析，
 而不是当前工作目录（cwd），也不是 onefile 解压产生的临时目录。
+打包产物以 gui.py 为入口（PyInstaller --windowed / Nuitka --windows-console-mode=disable），
+脚本模式对应 `python gui.py`。
 
 为什么 Nuitka onefile 需要特殊处理：
     Nuitka onefile 由 launcher + payload 组成。启动时 launcher 把 payload

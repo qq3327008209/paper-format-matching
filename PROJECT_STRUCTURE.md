@@ -1,6 +1,6 @@
 # 文档格式校验与排版引擎 —— 功能结构总览
 
-> 版本：engine 4.5.0 | 代码规模：59 个 Python 文件（含测试），非测试代码约 10,676 行 | 测试：15 个测试文件，258 个单元测试用例
+> 版本：engine 4.6.0 | 代码规模：59 个 Python 文件（含测试），非测试代码约 10,676 行 | 测试：15 个测试文件，258 个单元测试用例
 
 ---
 
@@ -74,9 +74,9 @@ RuleGenerator 模块提供一种"低代码"方式创建规则文件：用户只�
 
 ---
 
-## 六、交互入口层（cli.py）
+## 六、交互入口层（gui.py + cli.py）
 
-交互入口层有两个：**GUI（`gui.py`，PySide6）是当前唯一面向用户的主界面**，6 个功能页（校验 / 排版修复 / 批注 / 报告 / 规则生成 / 设置），耗时操作用 `QThread` Worker 在后台执行并经信号回传进度；**CLI（`cli.py`）是前期开发产物，作为备用入口保留、不再扩展新命令**。两者共用同一份业务逻辑：`gui.py` 的 `GuiBackend(_cli.CLI)` 子类化 `CLI` 类复用其方法，构造时用 `_UiProxy` 把 `ui.printers` 的打印调用改走 Qt 回调，任务结束后还原。
+交互入口层有两个：**GUI（`gui.py`，PySide6）是当前唯一面向用户的主界面**，6 个功能页（校验 / 排版修复 / 批注 / 报告 / 规则生成 / 设置），耗时操作用 `QThread` Worker 在后台执行并经信号回传进度；**CLI（`cli.py`）是前期开发产物，作为备用入口保留、不再扩展新命令**。两者共用同一份业务逻辑：`gui.py` 的 `GuiBackend(_cli.CLI)` 子类化 `CLI` 类复用其方法，构造时用 `_UiProxy` 把 `ui.printers` 的打印调用改走 Qt 回调，任务结束后还原。Windows 发行包同样以 `gui.py` 为打包入口（Nuitka 走 `--enable-plugin=pyside6` + `--windows-console-mode=disable`，PyInstaller 走 `--windowed`），`cli.py` 作为模块被打进产物供 GUI 复用业务层，但不会启动 REPL 主循环。
 
 CLI 基于 prompt_toolkit 实现，程序启动后自动创建 `input/` 与 `output/` 两个工作目录，用户以 `/` 开头的命令进行操作，每一条命令都经过统一的参数解析器解析（支持双引号包裹含空格路径、`--key value`、`--key=value`、`--key` 无值等多种写法）。共注册 18 条命令（含 `/help` 与 `/quit`，业务命令 16 条）：
 
